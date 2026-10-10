@@ -76,7 +76,7 @@ const canSelect = (u) =>
 // Inactive users tab
 // ---------------------------------------------------------------------------
 
-function AuditPanel({ gate, onReclaimed }) {
+function AuditPanel({ gate, onChanged, version }) {
   const [period, setPeriod] = useState(PERIODS[2]);
   const [status, setStatus] = useState(null);
   const [rows, setRows] = useState([]);
@@ -131,6 +131,14 @@ function AuditPanel({ gate, onReclaimed }) {
       loadPage(0);
     }
   }, [generatedAt, running, loadPage]);
+
+  // An undo in the History tab changes what this list should show.
+  const [seenVersion, setSeenVersion] = useState(version);
+  useEffect(() => {
+    if (version === seenVersion) return;
+    setSeenVersion(version);
+    if (generatedAt && !running) loadPage(pageIndex);
+  }, [version, seenVersion, generatedAt, running, loadPage, pageIndex]);
 
   const start = async () => {
     setBusy(true);
@@ -214,7 +222,7 @@ function AuditPanel({ gate, onReclaimed }) {
     setSelected(new Set());
     setOutcome({ results, before, after });
     await loadPage(pageIndex);
-    onReclaimed?.();
+    onChanged?.();
   };
 
   const products = report?.products ?? [];
@@ -317,7 +325,7 @@ function AuditPanel({ gate, onReclaimed }) {
               head={{
                 cells: [
                   { key: 'product', content: 'Product' },
-                  { key: 'seats', content: 'Seats counted by Atlassian' },
+                  { key: 'seats', content: 'Seats at scan time' },
                   { key: 'limit', content: 'Plan limit' },
                   { key: 'inactive', content: 'Inactive' },
                 ],
@@ -325,10 +333,10 @@ function AuditPanel({ gate, onReclaimed }) {
               rows={products.map((p) => ({
                 key: p.key,
                 cells: [
-                  { key: p.name, content: p.name },
-                  { key: p.userCount ?? 0, content: p.userCount ?? '—' },
-                  { key: p.numberOfSeats ?? 0, content: p.hasUnlimitedSeats ? 'Unlimited' : (p.numberOfSeats ?? '—') },
-                  { key: report.dormantByProduct?.[p.name] ?? 0, content: report.dormantByProduct?.[p.name] ?? 0 },
+                  { key: `name-${p.name}`, content: p.name },
+                  { key: `seats-${p.userCount ?? 0}`, content: p.userCount ?? '—' },
+                  { key: `limit-${p.numberOfSeats ?? 0}`, content: p.hasUnlimitedSeats ? 'Unlimited' : (p.numberOfSeats ?? '—') },
+                  { key: `inactive-${report.dormantByProduct?.[p.name] ?? 0}`, content: report.dormantByProduct?.[p.name] ?? 0 },
                 ],
               }))}
             />
@@ -381,7 +389,7 @@ function AuditPanel({ gate, onReclaimed }) {
                     key: u.accountId,
                     cells: [
                       {
-                        key: selected.has(u.accountId) ? 1 : 0,
+                        key: `pick-${selected.has(u.accountId) ? 1 : 0}`,
                         content: (
                           <Checkbox
                             label=""
@@ -393,7 +401,7 @@ function AuditPanel({ gate, onReclaimed }) {
                         ),
                       },
                       {
-                        key: String(u.displayName).toLowerCase(),
+                        key: `name-${String(u.displayName).toLowerCase()}`,
                         content: (
                           <Stack space="space.0">
                             <Text>{u.displayName}</Text>
@@ -401,13 +409,13 @@ function AuditPanel({ gate, onReclaimed }) {
                           </Stack>
                         ),
                       },
-                      { key: join(u.products), content: join(u.products) },
+                      { key: `products-${join(u.products)}`, content: join(u.products) },
                       {
-                        key: u.severity ?? 0,
+                        key: `last-${u.severity ?? 0}`,
                         content: <Lozenge appearance={u.severity >= 2 ? 'removed' : 'moved'}>{u.label}</Lozenge>,
                       },
                       {
-                        key: st.text,
+                        key: `status-${st.text}`,
                         content: (
                           <Stack space="space.050">
                             <Lozenge appearance={st.appearance}>{st.text}</Lozenge>
@@ -417,7 +425,7 @@ function AuditPanel({ gate, onReclaimed }) {
                         ),
                       },
                       {
-                        key: u.isProtected ? 1 : 0,
+                        key: `protect-${u.isProtected ? 1 : 0}`,
                         content: (
                           <Button appearance="subtle" spacing="compact" onClick={() => protect(u, !u.isProtected)}>
                             {u.isProtected ? 'Unprotect' : 'Protect'}
@@ -576,7 +584,7 @@ const STATUS = {
   restored: { text: 'Undone', appearance: 'default' },
 };
 
-function HistoryPanel({ refreshKey }) {
+function HistoryPanel({ version, onChanged }) {
   const [data, setData] = useState(null);
   const [page, setPage] = useState(0);
   const [working, setWorking] = useState(null);
@@ -594,7 +602,7 @@ function HistoryPanel({ refreshKey }) {
 
   useEffect(() => {
     load(0);
-  }, [load, refreshKey]);
+  }, [load, version]);
 
   const undo = async (entry) => {
     setWorking(entry.id);
@@ -603,6 +611,7 @@ function HistoryPanel({ refreshKey }) {
       const res = await invoke('undo', { entryId: entry.id });
       if (!res?.ok) setMessage(`Undo was not complete for ${entry.displayName}: ${res?.error ?? 'unknown error'}`);
       await load(page);
+      onChanged?.();
     } catch (err) {
       setMessage(`Undo failed: ${err?.message ?? 'no response'}.`);
     } finally {
@@ -707,7 +716,8 @@ function HistoryPanel({ refreshKey }) {
 
 const App = () => {
   const [ctx, setCtx] = useState(null);
-  const [historyKey, setHistoryKey] = useState(0);
+  const [version, setVersion] = useState(0);
+  const bump = () => setVersion((v) => v + 1);
   const [access, setAccess] = useState(null);
 
   useEffect(() => {
@@ -754,12 +764,12 @@ const App = () => {
         </TabList>
         <TabPanel>
           <Box xcss={{ paddingTop: 'space.200', width: '100%' }}>
-            <AuditPanel gate={gate} onReclaimed={() => setHistoryKey((k) => k + 1)} />
+            <AuditPanel gate={gate} version={version} onChanged={bump} />
           </Box>
         </TabPanel>
         <TabPanel>
           <Box xcss={{ paddingTop: 'space.200', width: '100%' }}>
-            <HistoryPanel refreshKey={historyKey} />
+            <HistoryPanel version={version} onChanged={bump} />
           </Box>
         </TabPanel>
       </Tabs>

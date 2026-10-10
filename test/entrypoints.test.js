@@ -52,3 +52,12 @@ test('the manifest has exactly one write scope', async () => {
   const writeScopes = scopes.filter((s) => !s.startsWith('read:') && s !== 'storage:app');
   assert.deepEqual(writeScopes, ['manage:jira-configuration']);
 });
+
+test('table cell keys are prefixed strings, so two cells in a row can never share a key', async () => {
+  // DynamicTable uses cell keys as React keys. A checkbox cell and a Protect
+  // cell both keyed 0 rendered a duplicate checkbox and swallowed clicks.
+  const { readFileSync } = await import('node:fs');
+  const ui = readFileSync(new URL('../src/frontend/index.jsx', import.meta.url), 'utf8');
+  assert.ok(!/key:\s*[^,`'"\n]*\?\s*1\s*:\s*0\s*,/.test(ui), 'no bare 1/0 cell keys');
+  assert.ok(!/key:\s*(u\.severity|p\.userCount|p\.numberOfSeats|report\.dormantByProduct)[^,`]*,/.test(ui), 'no bare numeric cell keys');
+});

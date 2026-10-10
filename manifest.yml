@@ -30,9 +30,7 @@ resources:
 app:
   runtime:
     name: nodejs22.x
-  id: ari:cloud:ecosystem::app/REPLACED-BY-FORGE-REGISTER
-  # Paid via Atlassian. Applies to PRODUCTION installs only; development and
-  # staging installs are unlicensed unless simulated with `forge install --license`.
+  id: ari:cloud:ecosystem::app/1538b047-91cd-40b5-b128-e0639c3745d0
   licensing:
     enabled: true
 permissions:

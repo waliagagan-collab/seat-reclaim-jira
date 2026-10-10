@@ -1,0 +1,51 @@
+modules:
+  jira:adminPage:
+    - key: seat-reclaim-page
+      resource: main
+      render: native
+      resolver:
+        function: resolver
+      title: Seat Reclaim
+  consumer:
+    - key: scan-consumer
+      queue: scan-queue
+      # @forge/events v2+ invokes this function directly. The deprecated
+      # `resolver:` form belongs to v1.x and makes the queue push fail.
+      function: scan-worker
+  function:
+    - key: resolver
+      handler: index.handler
+    - key: scan-worker
+      handler: worker.handler
+      # Slices stop themselves at SLICE.softBudgetMs; this is the hard ceiling
+      # that leaves room for the final storage writes of a slice.
+      timeoutSeconds: 60
+resources:
+  - key: main
+    path: src/frontend/index.jsx
+  # Custom UI resource rendered inside a UI Kit <Frame>: its only job is the
+  # CSV download, which UI Kit components cannot trigger themselves.
+  - key: export-frame
+    path: static/export
+app:
+  runtime:
+    name: nodejs22.x
+  id: ari:cloud:ecosystem::app/REPLACED-BY-FORGE-REGISTER
+  # Paid via Atlassian. Applies to PRODUCTION installs only; development and
+  # staging installs are unlicensed unless simulated with `forge install --license`.
+  licensing:
+    enabled: true
+permissions:
+  scopes:
+    # Reading: who holds a seat, what they did, and which groups grant access.
+    - read:jira-user
+    - read:jira-work
+    - read:application-role:jira
+    - read:group:jira
+    - read:user:jira
+    - read:avatar:jira
+    # The one write scope. It is used for exactly two calls, both made as the
+    # signed-in site admin after they confirm: leave a product access group
+    # (reclaim) and rejoin it (undo). Jira itself requires a site admin for both.
+    - manage:jira-configuration
+    - storage:app

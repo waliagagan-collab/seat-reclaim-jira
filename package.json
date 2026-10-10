@@ -1,0 +1,32 @@
+{
+  "name": "seat-reclaim-jira",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Find inactive Jira Cloud users and reclaim their seats, with review and undo",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "lint": "forge lint",
+    "login": "forge login",
+    "logout": "forge logout",
+    "whoami": "forge whoami",
+    "register": "forge register",
+    "deploy": "npm run build:frame && forge deploy",
+    "app:install": "forge install",
+    "tunnel": "forge tunnel",
+    "build:frame": "esbuild src/frame/index.js --bundle --minify --format=iife --target=es2020 --outfile=static/export/index.js",
+    "sbom": "node scripts/sbom.mjs"
+  },
+  "dependencies": {
+    "@forge/api": "^8.1.0",
+    "@forge/bridge": "^7.0.0",
+    "@forge/events": "^3.0.6",
+    "@forge/kvs": "^2.0.6",
+    "@forge/react": "^12.2.0",
+    "@forge/resolver": "^2.0.0"
+  },
+  "devDependencies": {
+    "@forge/cli": "^14.0.0",
+    "esbuild": "^0.28.2"
+  }
+}

@@ -18,16 +18,18 @@
     "sbom": "node scripts/sbom.mjs"
   },
   "dependencies": {
-    "@forge/api": "^8.1.0",
-    "@forge/bridge": "^7.0.0",
-    "@forge/events": "^3.0.6",
-    "@forge/kvs": "^2.0.6",
-    "@forge/react": "^12.2.0",
+    "@forge/api": "^8.2.0",
+    "@forge/bridge": "^7.1.0",
+    "@forge/events": "^3.0.7",
+    "@forge/kvs": "^2.0.7",
+    "@forge/react": "^12.3.0",
     "@forge/resolver": "^2.0.0"
   },
   "devDependencies": {
-    "@forge/cli": "^14.0.0",
     "esbuild": "^0.28.2",
     "fflate": "^0.8.3"
+  },
+  "overrides": {
+    "prosemirror-view": "^1.42.3"
   }
 }

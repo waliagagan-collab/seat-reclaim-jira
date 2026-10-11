@@ -14,10 +14,13 @@ import {
   getEntry,
   getLogPage,
   getLatestFor,
+  getSettings,
+  saveSettings,
 } from './lib/store.js';
 import { fetchUsersBulk, fetchApplicationRoles } from './lib/jira.js';
 import { adminOnly } from './lib/admin.js';
 import { normaliseDays, isStale, licenseGate, licenseMessage } from './lib/scan.js';
+import { normaliseSeatCosts } from './lib/ui.js';
 import {
   planReclaim,
   reasonText,
@@ -153,6 +156,15 @@ define('cancelScan', async () => {
     await clearRun(state.run);
   }
   return { ok: true };
+});
+
+// --- settings -------------------------------------------------------------------
+
+define('getSettings', async () => ({ ok: true, settings: await getSettings() }));
+
+define('saveSettings', async ({ payload }) => {
+  const settings = { seatCosts: normaliseSeatCosts(payload?.seatCosts) };
+  return { ok: true, settings: await saveSettings(settings) };
 });
 
 // --- seats --------------------------------------------------------------------

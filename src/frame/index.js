@@ -1,38 +1,34 @@
 import { invoke } from '@forge/bridge';
+import { buildXlsx, toCsv } from './xlsx.js';
 
 /**
  * The one thing UI Kit cannot do is hand the browser a file. This tiny
  * Custom UI resource lives inside a UI Kit <Frame> purely to turn the report
- * into a download. It talks to the same resolvers as the main page.
+ * into a download, as CSV or Excel. It talks to the same resolvers as the page.
  */
 
 const $ = (id) => document.getElementById(id);
 
-const csvOf = (rows) =>
-  ['Display name,Email,Products,Last activity,Can reclaim,Would free,Reason,Account ID']
-    .concat(
-      rows.map((r) =>
-        [
-          r.displayName,
-          r.email ?? '',
-          (r.products ?? []).join(' / '),
-          r.label ?? '',
-          r.lastAction?.status === 'reclaimed' ? 'Already reclaimed' : r.reclaimable && !r.isProtected ? 'Yes' : 'No',
-          (r.freedProducts ?? []).join(' / '),
-          r.reason ?? '',
-          r.accountId,
-        ]
-          .map((v) => `"${String(v).replace(/"/g, '""')}"`)
-          .join(',')
-      )
-    )
-    .join('\r\n');
+const HEADER = ['Display name', 'Email', 'Products', 'Last activity', 'Can reclaim', 'Would free', 'Reason', 'Account ID'];
+
+/** Pure: report rows -> a table whose first row is the header. */
+export const tableOf = (rows) => [
+  HEADER,
+  ...rows.map((r) => [
+    r.displayName,
+    r.email ?? '',
+    (r.products ?? []).join(' / '),
+    r.label ?? '',
+    r.lastAction?.status === 'reclaimed' ? 'Already reclaimed' : r.reclaimable && !r.isProtected ? 'Yes' : 'No',
+    (r.freedProducts ?? []).join(' / '),
+    r.reason ?? '',
+    r.accountId,
+  ]),
+];
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-function offerDownload(text, filename) {
-  // ﻿: the BOM makes Excel open the file as UTF-8 without an import wizard.
-  const blob = new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' });
+function offerDownload(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -50,25 +46,38 @@ async function refreshCount() {
     const n = res?.report?.dormantCount ?? 0;
     $('download').textContent = n ? `Download CSV (${n} inactive users)` : 'Download CSV';
     $('download').disabled = !n;
+    $('excel').disabled = !n;
   } catch {
     $('status').textContent = 'Could not read the report.';
   }
 }
 
-async function download() {
-  const btn = $('download');
-  btn.disabled = true;
+async function loadTable() {
+  const res = await invoke('getAllRows');
+  if (res?.forbidden) throw new Error(res.error);
+  const rows = res?.rows ?? [];
+  const capped = res?.limit && rows.length >= res.limit ? ` (capped at ${res.limit})` : '';
+  return { table: tableOf(rows), count: rows.length, capped };
+}
+
+async function download(kind) {
+  const buttons = [$('download'), $('excel')];
+  buttons.forEach((b) => (b.disabled = true));
   $('status').textContent = 'Preparing…';
   try {
-    const res = await invoke('getAllRows');
-    if (res?.forbidden) throw new Error(res.error);
-    const rows = res?.rows ?? [];
-    const text = csvOf(rows);
-    offerDownload(text, `seat-reclaim-${today()}.csv`);
-    $('status').textContent =
-      `${rows.length} rows` +
-      (res?.limit && rows.length >= res.limit ? ` (capped at ${res.limit})` : '') +
-      '. If nothing downloaded, use “Copy CSV” instead.';
+    const { table, count, capped } = await loadTable();
+    if (kind === 'xlsx') {
+      const blob = new Blob([buildXlsx(table, 'Inactive users')], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      offerDownload(blob, `seat-reclaim-${today()}.xlsx`);
+      $('status').textContent = `${count} rows${capped}.`;
+      return;
+    }
+    const text = toCsv(table);
+    // The BOM makes Excel open the CSV as UTF-8 without an import wizard.
+    offerDownload(new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' }), `seat-reclaim-${today()}.csv`);
+    $('status').textContent = `${count} rows${capped}. If nothing downloaded, use “Copy CSV” instead.`;
     $('copy').hidden = false;
     $('copy').onclick = async () => {
       try {
@@ -86,9 +95,12 @@ async function download() {
   } catch (err) {
     $('status').textContent = `Could not build the export: ${err?.message ?? 'no response'}.`;
   } finally {
-    btn.disabled = false;
+    buttons.forEach((b) => (b.disabled = false));
   }
 }
 
-$('download').addEventListener('click', download);
-refreshCount();
+if (typeof document !== 'undefined' && $('download')) {
+  $('download').addEventListener('click', () => download('csv'));
+  $('excel').addEventListener('click', () => download('xlsx'));
+  refreshCount();
+}

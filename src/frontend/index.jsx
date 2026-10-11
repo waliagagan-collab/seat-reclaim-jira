@@ -5,6 +5,7 @@ import ForgeReconciler, {
   Checkbox,
   DynamicTable,
   Frame,
+  Heading,
   Inline,
   Label,
   Lozenge,
@@ -14,6 +15,7 @@ import ForgeReconciler, {
   ModalHeader,
   ModalTitle,
   ModalTransition,
+  ProgressBar,
   SectionMessage,
   Select,
   Spinner,
@@ -28,6 +30,7 @@ import ForgeReconciler, {
 } from '@forge/react';
 import { invoke, view } from '@forge/bridge';
 import { licenseGate, licenseMessage } from '../lib/scan.js';
+import { bandOptions, filterRows, fmtMoney, normaliseSeatCosts, scanProgress, yearlySaving } from '../lib/ui.js';
 
 const PERIODS = [30, 60, 90, 180, 365].map((d) => ({
   label: `No activity in ${d} days`,
@@ -76,18 +79,74 @@ const canSelect = (u) =>
 // Inactive users tab
 // ---------------------------------------------------------------------------
 
+const ALL_PRODUCTS = { label: 'All products', value: '' };
+const ALL_BANDS = { label: 'Any inactivity', value: '' };
+const STATUS_FILTERS = [
+  { label: 'Everyone', value: '' },
+  { label: 'Ready to reclaim', value: 'ready' },
+  { label: 'Can’t reclaim', value: 'blocked' },
+  { label: 'Already reclaimed', value: 'done' },
+];
+
+const statusGroup = (u) =>
+  ['reclaimed', 'partial'].includes(u.lastAction?.status) ? 'done' : canSelect(u) ? 'ready' : 'blocked';
+
+const HowItWorks = ({ compact, onToggle }) =>
+  compact ? (
+    <SectionMessage>
+      <Inline space="space.100" alignBlock="center" shouldWrap>
+        <Text>
+          Finds licensed users who did nothing in Jira in the period, then frees their seats after you confirm. Every
+          change can be undone from History.
+        </Text>
+        <Button appearance="subtle" spacing="compact" onClick={onToggle}>
+          How it works
+        </Button>
+      </Inline>
+    </SectionMessage>
+  ) : (
+    <SectionMessage title="How it works">
+      <Stack space="space.100">
+        <Text>
+          Run a scan to find licensed users who did <Strong>nothing in Jira</Strong> in the period: no status change,
+          field edit, comment, logged work, or issue created or reported. Every candidate is checked against all issues
+          on the site. Then pick who to reclaim. The app takes them out of the groups that give them that product,
+          which frees the seat. Admins, app accounts and you are never touched. Nothing changes until you confirm, and
+          every change can be undone from the History tab.
+        </Text>
+        {onToggle && (
+          <Box>
+            <Button appearance="subtle" spacing="compact" onClick={onToggle}>
+              Hide
+            </Button>
+          </Box>
+        )}
+      </Stack>
+    </SectionMessage>
+  );
+
 function AuditPanel({ gate, onChanged, version }) {
   const [period, setPeriod] = useState(PERIODS[2]);
   const [status, setStatus] = useState(null);
   const [rows, setRows] = useState([]);
-  const [pageIndex, setPageIndex] = useState(0);
-  const [seatCost, setSeatCost] = useState('');
+  const [rowsLimit, setRowsLimit] = useState(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [progress, setProgress] = useState(null);
   const [outcome, setOutcome] = useState(null);
+  const [showHow, setShowHow] = useState(false);
+  const [prices, setPrices] = useState({});
+  const [savedPrices, setSavedPrices] = useState({});
+  // Text boxes keep their own text (defaultValue); the page only listens.
+  // Feeding the value back on every keystroke loses characters in UI Kit.
+  const [pricesVersion, setPricesVersion] = useState(0);
+  const [searchVersion, setSearchVersion] = useState(0);
+  const [query, setQuery] = useState('');
+  const [productFilter, setProductFilter] = useState(ALL_PRODUCTS);
+  const [bandFilter, setBandFilter] = useState(ALL_BANDS);
+  const [statusFilter, setStatusFilter] = useState(STATUS_FILTERS[0]);
 
   const refresh = useCallback(async () => {
     try {
@@ -99,8 +158,17 @@ function AuditPanel({ gate, onChanged, version }) {
     }
   }, []);
 
+  const applyCosts = (costs) => {
+    setSavedPrices(costs);
+    setPrices(Object.fromEntries(Object.entries(costs).map(([k, v]) => [k, String(v)])));
+    setPricesVersion((v) => v + 1);
+  };
+
   useEffect(() => {
     refresh();
+    invoke('getSettings')
+      .then((res) => applyCosts(res?.settings?.seatCosts ?? {}))
+      .catch(() => {});
   }, [refresh]);
 
   const state = status?.state;
@@ -114,13 +182,15 @@ function AuditPanel({ gate, onChanged, version }) {
     return () => clearInterval(id);
   }, [running, refresh]);
 
-  const loadPage = useCallback(async (index) => {
+  // The whole list loads at once, so search, filters and "select all" cover
+  // every inactive user, not just one page.
+  const loadAll = useCallback(async () => {
     try {
-      const res = await invoke('getPage', { index });
-      setRows(res.rows ?? []);
-      setPageIndex(index);
+      const res = await invoke('getAllRows');
+      setRows(res?.rows ?? []);
+      setRowsLimit(res?.limit ?? null);
     } catch (err) {
-      setMessage(`Could not load that page of results: ${err?.message ?? 'no response'}.`);
+      setMessage(`Could not load the list: ${err?.message ?? 'no response'}.`);
     }
   }, []);
 
@@ -128,17 +198,17 @@ function AuditPanel({ gate, onChanged, version }) {
   useEffect(() => {
     if (generatedAt && !running) {
       setSelected(new Set());
-      loadPage(0);
+      loadAll();
     }
-  }, [generatedAt, running, loadPage]);
+  }, [generatedAt, running, loadAll]);
 
   // An undo in the History tab changes what this list should show.
   const [seenVersion, setSeenVersion] = useState(version);
   useEffect(() => {
     if (version === seenVersion) return;
     setSeenVersion(version);
-    if (generatedAt && !running) loadPage(pageIndex);
-  }, [version, seenVersion, generatedAt, running, loadPage, pageIndex]);
+    if (generatedAt && !running) loadAll();
+  }, [version, seenVersion, generatedAt, running, loadAll]);
 
   const start = async () => {
     setBusy(true);
@@ -157,6 +227,15 @@ function AuditPanel({ gate, onChanged, version }) {
     }
   };
 
+  const savePrices = async () => {
+    try {
+      const res = await invoke('saveSettings', { seatCosts: prices });
+      applyCosts(res?.settings?.seatCosts ?? {});
+    } catch {
+      setMessage('Could not save the seat prices. Try again.');
+    }
+  };
+
   const toggle = (accountId, on) =>
     setSelected((prev) => {
       const next = new Set(prev);
@@ -165,23 +244,43 @@ function AuditPanel({ gate, onChanged, version }) {
       return next;
     });
 
-  const selectAllReady = () => setSelected(new Set(rows.filter(canSelect).map((u) => u.accountId)));
-
   const protect = async (u, on) => {
     try {
       await invoke('setProtected', { accountId: u.accountId, protected: on });
       toggle(u.accountId, false);
-      await loadPage(pageIndex);
+      await loadAll();
     } catch {
       setMessage('Could not update the protected list. Try again.');
     }
   };
 
+  const products = report?.products ?? [];
+  const liveCosts = useMemo(() => normaliseSeatCosts(prices), [prices]);
+  const pricesDirty = JSON.stringify(liveCosts) !== JSON.stringify(normaliseSeatCosts(savedPrices));
+  const saving = report ? yearlySaving(report.dormantByProduct, liveCosts) : null;
+
+  const productOptions = useMemo(
+    () => [ALL_PRODUCTS, ...products.map((p) => ({ label: p.name, value: p.name }))],
+    [products]
+  );
+  const bands = useMemo(() => [ALL_BANDS, ...bandOptions(rows)], [rows]);
+  const visible = useMemo(
+    () =>
+      filterRows(rows, { query, product: productFilter.value || null, band: bandFilter.value || null }).filter(
+        (u) => !statusFilter.value || statusGroup(u) === statusFilter.value
+      ),
+    [rows, query, productFilter, bandFilter, statusFilter]
+  );
+  const filtering = Boolean(query || productFilter.value || bandFilter.value || statusFilter.value);
+  const readyVisible = visible.filter(canSelect);
   const chosen = useMemo(() => rows.filter((u) => selected.has(u.accountId)), [rows, selected]);
-  const yearlyEstimate =
-    Number(seatCost) > 0 && chosen.length
-      ? Math.round(chosen.reduce((n, u) => n + (u.freedProducts?.length ?? 0), 0) * Number(seatCost))
-      : null;
+  const chosenSaving = useMemo(() => {
+    const perProduct = {};
+    for (const u of chosen) for (const p of u.freedProducts ?? []) perProduct[p] = (perProduct[p] ?? 0) + 1;
+    return yearlySaving(perProduct, liveCosts);
+  }, [chosen, liveCosts]);
+  const scan = scanProgress(state);
+  const hasEmails = rows.some((r) => r.email);
 
   /** Reclaim in small batches; read Atlassian's seat counts before and after. */
   const runReclaim = async () => {
@@ -198,7 +297,7 @@ function AuditPanel({ gate, onChanged, version }) {
       /* the counts are a bonus; the reclaim does not depend on them */
     }
     for (let i = 0; i < ids.length; i += BATCH) {
-      setProgress(`Reclaiming seats — ${Math.min(i + BATCH, ids.length)} of ${ids.length} users`);
+      setProgress({ done: i, total: ids.length });
       try {
         const res = await invoke('reclaim', { accountIds: ids.slice(i, i + BATCH) });
         if (!res?.ok) {
@@ -221,25 +320,13 @@ function AuditPanel({ gate, onChanged, version }) {
     setProgress(null);
     setSelected(new Set());
     setOutcome({ results, before, after });
-    await loadPage(pageIndex);
+    await loadAll();
     onChanged?.();
   };
 
-  const products = report?.products ?? [];
-  const hasEmails = rows.some((r) => r.email);
-  const readyOnPage = rows.filter(canSelect).length;
-
   return (
     <Stack space="space.200">
-      <SectionMessage title="How it works">
-        <Text>
-          Run a scan to find licensed users who did <Strong>nothing in Jira</Strong> in the period:
-          no status change, field edit, comment, logged work, or issue created or reported. Every
-          candidate is checked against all issues on the site. Then pick who to reclaim. The app
-          takes them out of the groups that give them that product, which frees the seat. Nothing
-          changes until you confirm, and every change can be undone from the History tab.
-        </Text>
-      </SectionMessage>
+      <HowItWorks compact={Boolean(report) && !showHow} onToggle={report ? () => setShowHow((v) => !v) : null} />
 
       <Inline space="space.100" alignBlock="end">
         <Box xcss={{ minWidth: '230px' }}>
@@ -276,10 +363,10 @@ function AuditPanel({ gate, onChanged, version }) {
       )}
 
       {running && !stale && (
-        <Inline space="space.100" alignBlock="center">
-          <Spinner size="small" />
+        <Stack space="space.075">
+          <ProgressBar ariaLabel="Scan progress" value={scan.value} isIndeterminate={scan.indeterminate} />
           <Text>{phaseText(state)}. You can leave this page — the scan continues.</Text>
-        </Inline>
+        </Stack>
       )}
 
       {stale && (
@@ -295,51 +382,97 @@ function AuditPanel({ gate, onChanged, version }) {
       )}
 
       {progress && (
-        <Inline space="space.100" alignBlock="center">
-          <Spinner size="small" />
-          <Text>{progress}. Keep this page open.</Text>
-        </Inline>
+        <Stack space="space.075">
+          <ProgressBar ariaLabel="Reclaim progress" value={progress.total ? progress.done / progress.total : 0} />
+          <Text>
+            Reclaiming seats — {Math.min(progress.done + BATCH, progress.total)} of {progress.total} users. Keep this
+            page open.
+          </Text>
+        </Stack>
       )}
 
       {outcome && <Outcome outcome={outcome} />}
 
       {report && (
         <Stack space="space.150">
-          <Inline space="space.200" alignBlock="center">
+          <Stack space="space.050">
+            <Heading as="h2" size="medium">
+              {report.dormantCount} inactive {report.dormantCount === 1 ? 'seat' : 'seats'}
+              {saving !== null ? ` · about ${fmtMoney(saving)} a year` : ''}
+            </Heading>
             <Text>
-              <Strong>{report.totalUsers}</Strong> licensed
+              {report.totalUsers} licensed · {report.activeUsers} active · {report.days}-day window · scanned{' '}
+              {fmtDate(report.generatedAt)}
             </Text>
-            <Text>
-              <Strong>{report.activeUsers}</Strong> active
-            </Text>
-            <Lozenge appearance={report.dormantCount ? 'removed' : 'success'}>
-              {report.dormantCount} inactive
-            </Lozenge>
-            <Text>
-              {report.days}-day window · scanned {fmtDate(report.generatedAt)}
-            </Text>
-          </Inline>
+            {report.dormantCount > 0 && saving === null && (
+              <Text>Enter the yearly price of a seat below to see what these seats cost.</Text>
+            )}
+          </Stack>
 
           {products.length > 0 && (
-            <DynamicTable
-              head={{
-                cells: [
-                  { key: 'product', content: 'Product' },
-                  { key: 'seats', content: 'Seats at scan time' },
-                  { key: 'limit', content: 'Plan limit' },
-                  { key: 'inactive', content: 'Inactive' },
-                ],
-              }}
-              rows={products.map((p) => ({
-                key: p.key,
-                cells: [
-                  { key: `name-${p.name}`, content: p.name },
-                  { key: `seats-${p.userCount ?? 0}`, content: p.userCount ?? '—' },
-                  { key: `limit-${p.numberOfSeats ?? 0}`, content: p.hasUnlimitedSeats ? 'Unlimited' : (p.numberOfSeats ?? '—') },
-                  { key: `inactive-${report.dormantByProduct?.[p.name] ?? 0}`, content: report.dormantByProduct?.[p.name] ?? 0 },
-                ],
-              }))}
-            />
+            <Stack space="space.100">
+              <DynamicTable
+                head={{
+                  cells: [
+                    { key: 'product', content: 'Product' },
+                    { key: 'seats', content: 'Seats at scan time' },
+                    { key: 'limit', content: 'Plan limit' },
+                    { key: 'inactive', content: 'Inactive' },
+                    { key: 'price', content: 'Yearly price of one seat' },
+                    { key: 'cost', content: 'Inactive seats cost' },
+                  ],
+                }}
+                rows={products.map((p) => {
+                  const inactive = report.dormantByProduct?.[p.name] ?? 0;
+                  const price = liveCosts[p.name];
+                  return {
+                    key: p.key,
+                    cells: [
+                      { key: `name-${p.name}`, content: p.name },
+                      { key: `seats-${p.userCount ?? 0}`, content: p.userCount ?? '—' },
+                      {
+                        key: `limit-${p.numberOfSeats ?? 0}`,
+                        content: p.hasUnlimitedSeats ? 'Unlimited' : (p.numberOfSeats ?? '—'),
+                      },
+                      { key: `inactive-${inactive}`, content: inactive },
+                      {
+                        key: `price-${p.name}`,
+                        content: (
+                          <Box xcss={{ maxWidth: '140px' }}>
+                            <Textfield
+                              key={`price-${p.key}-${pricesVersion}`}
+                              id={`price-${p.key}`}
+                              name={`price-${p.key}`}
+                              isCompact
+                              defaultValue={prices[p.name] ?? ''}
+                              placeholder="e.g. 100"
+                              onChange={(e) => {
+                                const value = e?.target?.value ?? '';
+                                setPrices((prev) => ({ ...prev, [p.name]: value }));
+                              }}
+                            />
+                          </Box>
+                        ),
+                      },
+                      {
+                        key: `cost-${p.name}`,
+                        content: price && inactive ? `${fmtMoney(price * inactive)} a year` : '—',
+                      },
+                    ],
+                  };
+                })}
+              />
+              <Inline space="space.100" alignBlock="center">
+                <Button onClick={savePrices} isDisabled={!pricesDirty}>
+                  Save prices
+                </Button>
+                <Text>
+                  {pricesDirty
+                    ? 'Prices are saved for this site, so the cost shows on every visit.'
+                    : 'Use what one seat costs you per year, in your billing currency.'}
+                </Text>
+              </Inline>
+            </Stack>
           )}
 
           {(report.warnings ?? []).map((w) => (
@@ -356,12 +489,67 @@ function AuditPanel({ gate, onChanged, version }) {
             </SectionMessage>
           ) : (
             <Stack space="space.150">
-              <Inline space="space.100" alignBlock="center">
-                <Button onClick={selectAllReady} isDisabled={!readyOnPage || !gate.allowed}>
-                  Select all ready ({readyOnPage})
+              <Inline space="space.100" alignBlock="end" shouldWrap>
+                <Box xcss={{ minWidth: '220px' }}>
+                  <Label labelFor="search">Search</Label>
+                  <Textfield
+                    key={`search-${searchVersion}`}
+                    id="search"
+                    name="search"
+                    defaultValue={query}
+                    placeholder="Name or email"
+                    onChange={(e) => setQuery(e?.target?.value ?? '')}
+                  />
+                </Box>
+                {products.length > 1 && (
+                  <Box xcss={{ minWidth: '190px' }}>
+                    <Label labelFor="product-filter">Product</Label>
+                    <Select
+                      id="product-filter"
+                      options={productOptions}
+                      value={productFilter}
+                      onChange={(v) => setProductFilter(v ?? ALL_PRODUCTS)}
+                    />
+                  </Box>
+                )}
+                <Box xcss={{ minWidth: '180px' }}>
+                  <Label labelFor="band-filter">Inactive for</Label>
+                  <Select id="band-filter" options={bands} value={bandFilter} onChange={(v) => setBandFilter(v ?? ALL_BANDS)} />
+                </Box>
+                <Box xcss={{ minWidth: '180px' }}>
+                  <Label labelFor="status-filter">Show</Label>
+                  <Select
+                    id="status-filter"
+                    options={STATUS_FILTERS}
+                    value={statusFilter}
+                    onChange={(v) => setStatusFilter(v ?? STATUS_FILTERS[0])}
+                  />
+                </Box>
+                {filtering && (
+                  <Button
+                    appearance="subtle"
+                    onClick={() => {
+                      setQuery('');
+                      setSearchVersion((v) => v + 1);
+                      setProductFilter(ALL_PRODUCTS);
+                      setBandFilter(ALL_BANDS);
+                      setStatusFilter(STATUS_FILTERS[0]);
+                    }}
+                  >
+                    Clear filters
+                  </Button>
+                )}
+              </Inline>
+
+              <Inline space="space.100" alignBlock="center" shouldWrap>
+                <Button
+                  onClick={() => setSelected(new Set(readyVisible.map((u) => u.accountId)))}
+                  isDisabled={!readyVisible.length || !gate.allowed}
+                >
+                  Select all ready ({readyVisible.length})
                 </Button>
                 <Button appearance="subtle" onClick={() => setSelected(new Set())} isDisabled={!selected.size}>
-                  Clear
+                  Clear selection
                 </Button>
                 <Button
                   appearance="danger"
@@ -370,7 +558,15 @@ function AuditPanel({ gate, onChanged, version }) {
                 >
                   Reclaim seats for {chosen.length} {chosen.length === 1 ? 'user' : 'users'}
                 </Button>
+                {chosenSaving !== null && <Text>About {fmtMoney(chosenSaving)} a year for the selected.</Text>}
               </Inline>
+              <Text>
+                Showing {visible.length} of {rows.length}
+                {selected.size ? ` · ${selected.size} selected` : ''}
+                {rowsLimit && rows.length >= rowsLimit && report.dormantCount > rows.length
+                  ? ` (the first ${rowsLimit} of ${report.dormantCount})`
+                  : ''}
+              </Text>
 
               <DynamicTable
                 head={{
@@ -383,7 +579,7 @@ function AuditPanel({ gate, onChanged, version }) {
                     { key: 'protect', content: '' },
                   ],
                 }}
-                rows={rows.map((u) => {
+                rows={visible.map((u) => {
                   const st = rowStatus(u);
                   return {
                     key: u.accountId,
@@ -396,7 +592,7 @@ function AuditPanel({ gate, onChanged, version }) {
                             value={u.accountId}
                             isChecked={selected.has(u.accountId)}
                             isDisabled={!canSelect(u) || !gate.allowed}
-                            onChange={(e) => toggle(u.accountId, Boolean(e?.target?.checked))}
+                            onChange={() => toggle(u.accountId, !selected.has(u.accountId))}
                           />
                         ),
                       },
@@ -438,37 +634,12 @@ function AuditPanel({ gate, onChanged, version }) {
                 rowsPerPage={25}
                 defaultSortKey="last"
                 defaultSortOrder="DESC"
+                emptyView={<Text>No inactive users match these filters.</Text>}
               />
 
               {!hasEmails && (
                 <Text>Emails are hidden because those users' profile privacy settings don't share them with apps.</Text>
               )}
-
-              {report.pages > 1 && (
-                <Inline space="space.100" alignBlock="center">
-                  <Button isDisabled={pageIndex === 0} onClick={() => loadPage(pageIndex - 1)}>
-                    Previous
-                  </Button>
-                  <Text>
-                    Page {pageIndex + 1} of {report.pages}
-                  </Text>
-                  <Button isDisabled={pageIndex >= report.pages - 1} onClick={() => loadPage(pageIndex + 1)}>
-                    Next
-                  </Button>
-                </Inline>
-              )}
-
-              <Inline space="space.100" alignBlock="end">
-                <Box xcss={{ maxWidth: '220px' }}>
-                  <Label labelFor="seat">Yearly cost of one seat</Label>
-                  <Textfield id="seat" value={seatCost} onChange={(e) => setSeatCost(e.target.value)} placeholder="e.g. 100" />
-                </Box>
-                {yearlyEstimate !== null && (
-                  <Text>
-                    About <Strong>{yearlyEstimate.toLocaleString()}</Strong> a year for the {chosen.length} selected.
-                  </Text>
-                )}
-              </Inline>
               <Text size="small">
                 Freeing a seat lowers the number of users Atlassian counts. What your bill does depends on your plan:
                 Atlassian bills by user tier, usually from the next billing cycle, so the price may not drop until the

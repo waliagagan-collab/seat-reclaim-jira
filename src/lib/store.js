@@ -220,3 +220,16 @@ export async function getLatestFor(accountIds) {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Settings: the yearly price of one seat, per product. Numbers only.
+// ---------------------------------------------------------------------------
+
+const SETTINGS_KEY = 'settings';
+
+export const getSettings = async () => (await kvs.get(SETTINGS_KEY)) ?? { seatCosts: {} };
+
+export async function saveSettings(settings) {
+  await kvs.set(SETTINGS_KEY, settings);
+  return settings;
+}

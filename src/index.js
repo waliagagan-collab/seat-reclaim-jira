@@ -13,7 +13,6 @@ import {
   saveEntry,
   getEntry,
   getLogPage,
-  getLatestFor,
   getSettings,
   saveSettings,
 } from './lib/store.js';
@@ -21,6 +20,7 @@ import { fetchUsersBulk, fetchApplicationRoles } from './lib/jira.js';
 import { adminOnly } from './lib/admin.js';
 import { normaliseDays, isStale, licenseGate, licenseMessage } from './lib/scan.js';
 import { normaliseSeatCosts } from './lib/ui.js';
+import { decorate, protectedReasonFor } from './lib/decorate.js';
 import {
   planReclaim,
   reasonText,
@@ -45,43 +45,6 @@ const EXPORT_LIMIT = 5000;
 // A resolver call has a hard time limit, so reclaim runs in small batches and
 // the page loops. Each user costs one read plus one call per group.
 export const RECLAIM_BATCH = 5;
-
-/** Who is protected from reclaim, and why. */
-const protectedReasonFor = (accountId, protectedList, me) =>
-  accountId === me ? 'self' : protectedList[accountId] ? 'protected' : null;
-
-/**
- * Stored rows carry account IDs only. Names and emails are attached here, at
- * read time, so they are always current and never sit in storage. Each row
- * also gets its reclaim plan from the scan snapshot and the latest action.
- */
-async function decorate(rows, context) {
-  const [people, meta, protectedList, latest] = await Promise.all([
-    fetchUsersBulk(rows.map((r) => r.accountId)),
-    getReportMeta(),
-    getProtected(),
-    getLatestFor(rows.map((r) => r.accountId)),
-  ]);
-  const me = context?.accountId;
-  return rows.map((r) => {
-    const plan = planReclaim({
-      userGroupIds: r.groups,
-      groupsMeta: meta?.groupsMeta ?? {},
-      protectedReason: protectedReasonFor(r.accountId, protectedList, me),
-    });
-    return {
-      ...r,
-      displayName: people[r.accountId]?.displayName ?? '(unknown)',
-      email: people[r.accountId]?.email ?? null,
-      reclaimable: plan.reclaimable,
-      reason: reasonText(plan),
-      freedProducts: plan.freedProducts,
-      removeGroups: plan.remove.map((g) => g.name),
-      isProtected: Boolean(protectedList[r.accountId]),
-      lastAction: latest[r.accountId] ?? null,
-    };
-  });
-}
 
 const licenseRefusal = (context) => {
   const gate = licenseGate(context?.license, context?.environmentType);

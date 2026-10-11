@@ -1,4 +1,86 @@
 modules:
+  rovo:agent:
+    - key: seat-reclaim-agent
+      name: Seat Reclaim for Jira
+      description: "Answers questions about reclaiming unused Jira seats: who is ready to reclaim, what each would free, why others can't be reclaimed, and what was reclaimed or undone. Read-only, for Jira admins. Open Rovo in Jira to use it."
+      prompt: |
+        You are Seat Reclaim for Jira, an assistant for Jira administrators. You answer questions about unused Jira seats and reclaiming them, from the Seat Reclaim app's last scan, its reclaim plan and its action log.
+
+        How the data works:
+        - A scan lists licensed users who did nothing in Jira during the scan period: no issue created or reported, no status or field change, no comment, no logged work. Being assigned an issue does not count as activity. Activity in other Atlassian apps is not measured, and no app can see logins.
+        - Ready to reclaim means the app can free a seat by removing the user from the product access groups that give them that product. Can't reclaim means something stops it: their access comes from an admin group, they are on the protected list, they are the person asking, or they are in no access group any more. Already reclaimed means the app removed their access before.
+        - Seat counts can be checked against what Atlassian counts now. Yearly savings come only from the seat prices an admin saved in the app, in their billing currency. If a product has no saved price, say so and never guess a price or a currency.
+
+        Rules:
+        - Use get-reclaim-summary for totals, savings and reasons. Use list-reclaim-candidates for names. Use get-reclaim-history for what was reclaimed or undone, when and by whom. Never invent users, numbers or prices.
+        - Always say when the scan was run and its period in days.
+        - You cannot reclaim, undo, protect anyone or run a scan. Reclaiming happens only on the Seat Reclaim page in Jira settings, Apps, Seat Reclaim, where the admin selects users and confirms. Every reclaim is logged there and can be undone.
+        - If an action returns a sentence instead of data (for example, no scan yet, or the user is not a Jira admin), pass it on plainly.
+        - Show users as a table with name, products, how long inactive, status and what reclaiming would free, or the reason it can't be reclaimed. If more users match than were returned, say how many and offer to show more.
+        - Keep answers short and plain.
+      conversationStarters:
+        - How many seats can I reclaim, and what would that save a year?
+        - Who is ready to reclaim?
+        - Why can't some users be reclaimed?
+        - What was reclaimed recently?
+      actions:
+        - get-reclaim-summary
+        - list-reclaim-candidates
+        - get-reclaim-history
+  action:
+    - key: get-reclaim-summary
+      name: Get reclaim summary
+      function: agent-reclaim-summary
+      actionVerb: GET
+      description: "Seat Reclaim summary for this Jira site: scan date and period, users ready to reclaim, blocked with reasons, already reclaimed, seats freed per product, estimated yearly saving and seats Atlassian counts now."
+      inputs:
+        product:
+          title: Product
+          type: string
+          required: false
+          description: "Optional. Limit the summary to one Jira product, for example Jira Software or JSM."
+    - key: list-reclaim-candidates
+      name: List reclaim candidates
+      function: agent-reclaim-list
+      actionVerb: GET
+      description: "Inactive users from the last Seat Reclaim scan, longest inactive first, with products, how long inactive, status, what reclaiming would free or why it can't. Use whenever the user wants names."
+      inputs:
+        status:
+          title: Status
+          type: string
+          required: false
+          description: "Optional. ready, cannot (blocked) or already reclaimed. Leave empty for everyone."
+        search:
+          title: Name or email
+          type: string
+          required: false
+          description: "Optional. Only users whose name or email contains this text."
+        product:
+          title: Product
+          type: string
+          required: false
+          description: "Optional. Only users holding a seat for this Jira product, for example Jira Software or JSM."
+        minimumDaysInactive:
+          title: Minimum days inactive
+          type: integer
+          required: false
+          description: "Optional. Only users known to be inactive for at least this many days, for example 180 or 365."
+        limit:
+          title: How many
+          type: integer
+          required: false
+          description: "Optional. How many users to return, 1 to 100. Defaults to 25."
+    - key: get-reclaim-history
+      name: Get reclaim history
+      function: agent-reclaim-history
+      actionVerb: GET
+      description: "Recent reclaims and undos done with Seat Reclaim, newest first: whose seat, outcome, when, by whom, products freed and whether it was undone."
+      inputs:
+        limit:
+          title: How many
+          type: integer
+          required: false
+          description: "Optional. How many recent actions to return, 1 to 25. Defaults to 10."
   jira:adminPage:
     - key: seat-reclaim-page
       resource: main
@@ -15,6 +97,12 @@ modules:
   function:
     - key: resolver
       handler: index.handler
+    - key: agent-reclaim-summary
+      handler: agent.getReclaimSummary
+    - key: agent-reclaim-list
+      handler: agent.listReclaimCandidates
+    - key: agent-reclaim-history
+      handler: agent.getReclaimHistory
     - key: scan-worker
       handler: worker.handler
       # Slices stop themselves at SLICE.softBudgetMs; this is the hard ceiling

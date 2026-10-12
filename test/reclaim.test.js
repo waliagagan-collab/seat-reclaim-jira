@@ -6,6 +6,7 @@ import {
   planReclaim,
   reasonText,
   explainChange,
+  isIdpManaged,
   alreadyMember,
 } from '../src/lib/reclaim.js';
 
@@ -94,6 +95,20 @@ test('planning survives missing inputs', () => {
 test('a 403 on reclaim tells the admin that site admin is required', () => {
   assert.match(explainChange(403, null), /site admins/);
   assert.match(explainChange(404, { errorMessages: ['Group not found'] }), /Group not found/);
+});
+
+test('a group synced from an identity provider gets a plain explanation', () => {
+  const scim = {
+    errorMessages: [
+      'An error occurred: com.atlassian.idp.client.exceptions.BadRequestException: {"status":"400","detail":"Group not modifiable","message":"Group not modifiable"}',
+    ],
+  };
+  assert.equal(isIdpManaged(400, scim), true);
+  assert.match(explainChange(400, scim), /identity provider/);
+  assert.equal(isIdpManaged(400, { message: 'Group not modifiable' }), true);
+  assert.equal(isIdpManaged(400, { errorMessages: ['User is already a member of the group'] }), false);
+  assert.equal(isIdpManaged(403, scim), false);
+  assert.match(explainChange(400, { errorMessages: ['Something else'] }), /Jira returned 400/);
 });
 
 test('undo treats "already a member" as restored', () => {

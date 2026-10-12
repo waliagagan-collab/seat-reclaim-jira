@@ -108,8 +108,31 @@ export function reasonText(plan) {
   }
 }
 
+/** Pure: every message Jira put in an error body, as one string. */
+const errorText = (body) =>
+  [
+    ...(body?.errorMessages ?? []),
+    ...Object.values(body?.errors ?? {}),
+    body?.message,
+    body?.detail,
+  ]
+    .filter((m) => typeof m === 'string' && m)
+    .join(' ');
+
+export const IDP_MANAGED_MESSAGE =
+  "This group is managed by your identity provider (for example Okta or Microsoft Entra ID), so Jira won't change it here. Remove the user from the group in your identity provider instead.";
+
+/**
+ * Pure: is this the refusal Jira gives for a group synced from an identity
+ * provider? Those groups are read-only in Atlassian; Jira answers 400 with
+ * "Group not modifiable" (from the SCIM layer).
+ */
+export const isIdpManaged = (status, body) =>
+  status === 400 && /not modifiable|identity provider|scim|externally managed|read[- ]?only/i.test(errorText(body));
+
 /** Pure: words for a failed Jira call during reclaim or undo. */
 export function explainChange(status, body) {
+  if (isIdpManaged(status, body)) return IDP_MANAGED_MESSAGE;
   const detail = body?.errorMessages?.length ? ` (${body.errorMessages.join('; ')})` : '';
   if (status === 403 || status === 401) {
     return `Jira refused (${status}). Only site admins can change group membership. Ask a site admin to run this.${detail}`;

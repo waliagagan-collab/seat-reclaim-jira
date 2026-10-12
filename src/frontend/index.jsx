@@ -8,6 +8,7 @@ import ForgeReconciler, {
   Heading,
   Inline,
   Label,
+  Link,
   Lozenge,
   Modal,
   ModalBody,
@@ -30,7 +31,35 @@ import ForgeReconciler, {
 } from '@forge/react';
 import { invoke, view } from '@forge/bridge';
 import { licenseGate, licenseMessage } from '../lib/scan.js';
-import { bandOptions, filterRows, fmtMoney, normaliseSeatCosts, scanProgress, yearlySaving } from '../lib/ui.js';
+import { bandOptions, filterRows, fmtMoney, normaliseSeatCosts, scanProgress, showReviewPrompt, yearlySaving } from '../lib/ui.js';
+
+const REVIEW_URL = 'https://marketplace.atlassian.com/apps/1825851557?tab=reviews';
+
+
+/**
+ * One-time request for a Marketplace review, shown only after the app has
+ * done something useful. Closing it hides it for the whole site.
+ */
+function ReviewPrompt({ onHide }) {
+  return (
+    <SectionMessage appearance="discovery" title="Did this save you money?">
+      <Stack space="space.100">
+        <Text>
+          A short review on the Atlassian Marketplace helps other admins find this app. It takes a
+          minute, and we read every one.
+        </Text>
+        <Inline space="space.100" alignBlock="center">
+          <Link href={REVIEW_URL} openNewTab>
+            Write a review
+          </Link>
+          <Button appearance="subtle" onClick={onHide}>
+            Not now
+          </Button>
+        </Inline>
+      </Stack>
+    </SectionMessage>
+  );
+}
 
 const PERIODS = [30, 60, 90, 180, 365].map((d) => ({
   label: `No activity in ${d} days`,
@@ -164,10 +193,19 @@ function AuditPanel({ gate, onChanged, version }) {
     setPricesVersion((v) => v + 1);
   };
 
+  const [reviewHidden, setReviewHidden] = useState(true);
+  const hideReview = () => {
+    setReviewHidden(true);
+    invoke('hideReviewPrompt').catch(() => {});
+  };
+
   useEffect(() => {
     refresh();
     invoke('getSettings')
-      .then((res) => applyCosts(res?.settings?.seatCosts ?? {}))
+      .then((res) => {
+        setReviewHidden(Boolean(res?.settings?.reviewPromptHiddenAt));
+        applyCosts(res?.settings?.seatCosts ?? {});
+      })
       .catch(() => {});
   }, [refresh]);
 
@@ -395,6 +433,9 @@ function AuditPanel({ gate, onChanged, version }) {
       )}
 
       {outcome && <Outcome outcome={outcome} />}
+      {outcome && showReviewPrompt({ earned: outcome.results.some((r) => r.ok), hidden: reviewHidden }) && (
+        <ReviewPrompt onHide={hideReview} />
+      )}
 
       {report && (
         <Stack space="space.150">

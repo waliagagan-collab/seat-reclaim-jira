@@ -127,8 +127,17 @@ define('cancelScan', async () => {
 define('getSettings', async () => ({ ok: true, settings: await getSettings() }));
 
 define('saveSettings', async ({ payload }) => {
-  const settings = { seatCosts: normaliseSeatCosts(payload?.seatCosts) };
+  const current = await getSettings();
+  const settings = { ...current, seatCosts: normaliseSeatCosts(payload?.seatCosts) };
   return { ok: true, settings: await saveSettings(settings) };
+});
+
+// The review request is shown once per site, after the app has done something
+// useful. Closing it is remembered here so no admin sees it again.
+define('hideReviewPrompt', async () => {
+  const current = await getSettings();
+  await saveSettings({ ...current, reviewPromptHiddenAt: new Date().toISOString() });
+  return { ok: true };
 });
 
 // --- seats --------------------------------------------------------------------

@@ -100,3 +100,12 @@ export function scanProgress(state) {
       return { value: 0, indeterminate: true };
   }
 }
+
+/**
+ * Pure: show the one-time request for a Marketplace review? Only once the app
+ * has shown its value (`earned`: a report with at least one inactive user, or
+ * a seat actually freed), and never again after an admin closes it. Closing
+ * is remembered per site in settings, so the prompt is seen once, not once
+ * per admin.
+ */
+export const showReviewPrompt = ({ earned, hidden }) => Boolean(earned) && !hidden;

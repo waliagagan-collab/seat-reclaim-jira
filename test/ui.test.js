@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { unzipSync, strFromU8 } from 'fflate';
-import { normaliseSeatCosts, yearlySaving, fmtMoney, filterRows, bandOptions, scanProgress } from '../src/lib/ui.js';
+import { normaliseSeatCosts, yearlySaving, fmtMoney, filterRows, bandOptions, scanProgress, showReviewPrompt } from '../src/lib/ui.js';
 import { buildXlsx, columnName, xmlText, csvCell, toCsv } from '../src/frame/xlsx.js';
 
 test('seat prices keep only positive, sane numbers', () => {
@@ -98,4 +98,11 @@ test('csv cells neutralise spreadsheet formulas and quote safely', () => {
   assert.equal(csvCell('+1'), `"'+1"`);
   assert.equal(csvCell('say "hi"'), '"say ""hi"""');
   assert.equal(toCsv([['a', 'b'], ['1', '2']]), '"a","b"\r\n"1","2"');
+});
+
+test('the review request appears once value is shown and never after it is closed', () => {
+  assert.equal(showReviewPrompt({ earned: true, hidden: false }), true);
+  assert.equal(showReviewPrompt({ earned: false, hidden: false }), false);
+  assert.equal(showReviewPrompt({ earned: true, hidden: true }), false);
+  assert.equal(showReviewPrompt({ earned: undefined, hidden: undefined }), false);
 });

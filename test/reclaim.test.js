@@ -92,6 +92,15 @@ test('planning survives missing inputs', () => {
   assert.deepEqual(buildGroupsMeta(undefined), {});
 });
 
+test('with no group map at all (directory fallback) the reason is missing data, not a free seat', () => {
+  const plan = planReclaim({ userGroupIds: ['g-jsw'], groupsMeta: {} });
+  assert.equal(plan.reclaimable, false);
+  assert.equal(plan.reason, 'no-role-data');
+  assert.match(reasonText(plan), /licence groups/);
+  assert.ok(!/already be free/.test(reasonText(plan)));
+  assert.match(reasonText({ reclaimable: false, reason: 'active-since-scan' }), /active in Jira since the scan/);
+});
+
 test('a 403 on reclaim tells the admin that site admin is required', () => {
   assert.match(explainChange(403, null), /site admins/);
   assert.match(explainChange(404, { errorMessages: ['Group not found'] }), /Group not found/);

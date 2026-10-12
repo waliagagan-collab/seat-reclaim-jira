@@ -54,6 +54,12 @@ export function planReclaim({ userGroupIds, groupsMeta, protectedReason = null }
   if (protectedReason) {
     return { reclaimable: false, reason: protectedReason, remove: [], freedProducts: [], keptProducts: [] };
   }
+  // No group map at all means the scan fell back to the site directory: the
+  // app has nothing to plan from, which is not the same as the user holding
+  // no access group.
+  if (!groupsMeta || Object.keys(groupsMeta).length === 0) {
+    return { reclaimable: false, reason: 'no-role-data', remove: [], freedProducts: [], keptProducts: [] };
+  }
 
   const remove = [];
   const keptVia = new Map(); // product -> admin group name that keeps it
@@ -103,6 +109,10 @@ export function reasonText(plan) {
     }
     case 'no-access-groups':
       return 'Not in any product access group any more. Their seat may already be free.';
+    case 'no-role-data':
+      return "The app couldn't read Jira's licence groups during the scan, so it can't plan a reclaim. Reinstalling the app usually restores that permission; then run a new scan.";
+    case 'active-since-scan':
+      return 'Has been active in Jira since the scan, so their seat was left alone. Run a new scan for a current list.';
     default:
       return 'Cannot be reclaimed.';
   }

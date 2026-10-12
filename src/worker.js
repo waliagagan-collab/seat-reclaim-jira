@@ -61,22 +61,33 @@ export async function handler(event) {
   }
 
   try {
+    let live;
     switch (state.phase) {
       case 'roles':
-        return await doRoles(state);
+        live = await doRoles(state);
+        break;
       case 'members':
-        return await doMembers(state);
+        live = await doMembers(state);
+        break;
       case 'directory':
-        return await doDirectory(state);
+        live = await doDirectory(state);
+        break;
       case 'issues':
-        return await doIssues(state);
+        live = await doIssues(state);
+        break;
       case 'verify':
-        return await doVerify(state);
+        live = await doVerify(state);
+        break;
       case 'finalize':
-        return await doFinalize(state);
+        live = await doFinalize(state);
+        break;
       default:
         return await fail(state, `Unknown scan phase "${state.phase}"`);
     }
+    // A cancel or a new scan landed while this slice ran: its scratch writes
+    // would otherwise sit in storage for ever.
+    if (live === false) await clearRun(state.run);
+    return undefined;
   } catch (err) {
     if (err.rateLimited) {
       return new InvocationError({
@@ -369,7 +380,7 @@ async function doFinalize(state) {
     ],
   });
 
-  await commit(
+  return commit(
     state,
     { status: 'complete', phase: 'done', finishedAt: report.generatedAt },
     { requeue: false }

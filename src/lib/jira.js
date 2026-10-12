@@ -311,16 +311,20 @@ export const PROBES = [180, 365];
 
 export function classifyDormancy(days, probeResults) {
   const wider = PROBES.filter((p) => p > days);
-  for (const p of wider) {
+  // The band's lower bound is the last probe that found nothing: inactive in
+  // 90 and in 180 but active in 365 means 180–365 days, not 90–365.
+  let floor = days;
+  for (let i = 0; i < wider.length; i++) {
+    const p = wider[i];
     if (probeResults[p] === true) {
-      return { bucket: `${days}-${p}`, label: `${days}–${p} days`, severity: 1 };
+      return { bucket: `${floor}-${p}`, label: `${floor}–${p} days`, severity: i + 1 };
     }
+    floor = p;
   }
-  const floor = wider.length ? wider[wider.length - 1] : days;
   return {
     bucket: `over-${floor}`,
     label: floor >= 365 ? 'Over a year, or never' : `Over ${floor} days`,
-    severity: 2,
+    severity: wider.length + 1,
   };
 }
 

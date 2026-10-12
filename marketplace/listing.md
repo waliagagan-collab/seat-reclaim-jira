@@ -29,7 +29,7 @@ Finds licensed Jira users who did nothing for 30 to 365 days, verified against e
 Seat Reclaim lists the licensed users who have done **nothing in Jira** in a period you choose (no status change, field edit, comment, logged work, or issue created) and frees their seats after you confirm.
 
 - Each user shows what reclaiming would free, or why it can't: admin groups, you, and your protected list are never touched.
-- Select users, check the summary of groups and products, confirm. Groups are re-read live first.
+- Select users, check the summary of groups and products, confirm. Activity and groups are re-checked live first.
 - See Atlassian's seat count before and after, and what inactive seats cost a year.
 - History logs every change; Undo restores exactly the groups removed.
 
@@ -39,7 +39,7 @@ Seat Reclaim lists the licensed users who have done **nothing in Jira** in a per
 
 1. **Free seats and see the count drop** — Select inactive users, confirm, and their seats are free. The page shows Atlassian's own seat count before and after, and what the inactive seats cost a year.
    Image: `assets/2026-10-12/highlight-1-result.png`
-2. **Check every change before it happens** — A summary lists the groups each person leaves and the products they lose. Groups are re-read live before each change. Admins, you and anyone you protect are never touched.
+2. **Check every change before it happens** — A summary lists the groups each person leaves and the products they lose. Activity and groups are re-checked live before each change. Admins, you and anyone you protect are never touched.
    Image: `assets/2026-10-12/highlight-2-confirm.png`
 3. **Undo any reclaim** — History records whose seat was reclaimed, who approved it, when, and which groups they left. Undo puts the person back in exactly those groups.
    Image: `assets/2026-10-12/highlight-3-history.png`

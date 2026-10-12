@@ -10,7 +10,7 @@ import {
   buildUserActivityJql,
   classifyDormancy,
 } from '../src/lib/jira.js';
-import { shardOf, SHARDS, sortDormant } from '../src/lib/store.js';
+import { shardOf, SHARDS, sortDormant, mergeDormant } from '../src/lib/store.js';
 import { isStale, normaliseDays, licenseGate, licenseMessage } from '../src/lib/scan.js';
 
 const person = (id) => ({ accountId: id, displayName: id });
@@ -208,22 +208,25 @@ test('per-user JQL quotes the account id and only lists things the user DID', ()
 
 // --- dormancy bands -----------------------------------------------------------
 
-test('classifies the band from the first wider probe that shows activity', () => {
+test('the band starts at the last probe that found nothing, and longer bands sort higher', () => {
   assert.deepEqual(classifyDormancy(90, { 180: true }), {
     bucket: '90-180',
     label: '90–180 days',
     severity: 1,
   });
+  // Inactive in 90 and in 180 but active within 365: that is 180–365, not 90–365.
   assert.deepEqual(classifyDormancy(90, { 180: false, 365: true }), {
-    bucket: '90-365',
-    label: '90–365 days',
-    severity: 1,
+    bucket: '180-365',
+    label: '180–365 days',
+    severity: 2,
   });
   assert.deepEqual(classifyDormancy(90, { 180: false, 365: false }), {
     bucket: 'over-365',
     label: 'Over a year, or never',
-    severity: 2,
+    severity: 3,
   });
+  assert.deepEqual(classifyDormancy(180, { 365: true }), { bucket: '180-365', label: '180–365 days', severity: 1 });
+  assert.deepEqual(classifyDormancy(180, { 365: false }).bucket, 'over-365');
 });
 
 test('a 365-day window has no wider probe and goes straight to the top band', () => {
@@ -313,4 +316,11 @@ test('the audit window only accepts the offered values', () => {
   assert.equal(normaliseDays(7), 90, 'unknown values fall back to the default');
   assert.equal(normaliseDays(undefined), 90);
   assert.equal(normaliseDays('DROP TABLE'), 90);
+});
+
+test('a replayed verify slice does not duplicate users in the dormant list', () => {
+  const existing = [{ accountId: 'a', bucket: 'over-365' }];
+  const merged = mergeDormant(existing, [{ accountId: 'a', bucket: 'over-365' }, { accountId: 'b', bucket: '90-180' }]);
+  assert.deepEqual(merged.map((r) => r.accountId), ['a', 'b']);
+  assert.deepEqual(mergeDormant(undefined, []), []);
 });

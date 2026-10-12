@@ -40,7 +40,8 @@ test('status groups match the page: ready, blocked, already reclaimed', () => {
   assert.equal(statusOf(admin), 'blocked');
   assert.equal(statusOf(done), 'reclaimed');
   assert.equal(statusOf({ ...ready, isProtected: true }), 'blocked');
-  assert.equal(statusOf({ ...ready, lastAction: { status: 'partial' } }), 'reclaimed');
+  // A partial reclaim left groups behind, so the user can be reclaimed again.
+  assert.equal(statusOf({ ...ready, lastAction: { status: 'partial' } }), 'ready');
   assert.equal(statusOf({ ...ready, lastAction: { status: 'restored' } }), 'ready');
 });
 
@@ -67,6 +68,9 @@ test('candidates filter by status, product, days and search', () => {
 test('a candidate line shows what reclaiming would free, or why it cannot', () => {
   assert.deepEqual(candidateLine(ready).wouldFree, ['Jira Product Discovery']);
   assert.equal(candidateLine(ready).reason, null);
+  // The plan ignores the protected list; the line must still say why.
+  assert.equal(candidateLine({ ...ready, isProtected: true }).status, "Can't reclaim");
+  assert.match(candidateLine({ ...ready, isProtected: true }).reason, /protected list/);
   assert.deepEqual(candidateLine(admin).wouldFree, []);
   assert.match(candidateLine(admin).reason, /admin group/);
   assert.equal(candidateLine(done).status, 'Already reclaimed');

@@ -72,8 +72,8 @@ function rowStatus(u) {
   return { text: 'Ready', appearance: 'inprogress' };
 }
 
-const canSelect = (u) =>
-  u.reclaimable && !u.isProtected && !['reclaimed', 'partial'].includes(u.lastAction?.status);
+// A partly reclaimed user still has groups to leave, so they stay selectable.
+const canSelect = (u) => u.reclaimable && !u.isProtected && u.lastAction?.status !== 'reclaimed';
 
 // ---------------------------------------------------------------------------
 // Inactive users tab
@@ -88,8 +88,7 @@ const STATUS_FILTERS = [
   { label: 'Already reclaimed', value: 'done' },
 ];
 
-const statusGroup = (u) =>
-  ['reclaimed', 'partial'].includes(u.lastAction?.status) ? 'done' : canSelect(u) ? 'ready' : 'blocked';
+const statusGroup = (u) => (u.lastAction?.status === 'reclaimed' ? 'done' : canSelect(u) ? 'ready' : 'blocked');
 
 const HowItWorks = ({ compact, onToggle }) =>
   compact ? (
@@ -111,8 +110,9 @@ const HowItWorks = ({ compact, onToggle }) =>
           Run a scan to find licensed users who did <Strong>nothing in Jira</Strong> in the period: no status change,
           field edit, comment, logged work, or issue created or reported. Every candidate is checked against all issues
           on the site. Then pick who to reclaim. The app takes them out of the groups that give them that product,
-          which frees the seat. Admins, app accounts and you are never touched. Nothing changes until you confirm, and
-          every change can be undone from the History tab.
+          which frees the seat. Admins, app accounts and you are never touched, and you can <Strong>Protect</Strong>{' '}
+          anyone else you want left alone. Nothing changes until you confirm; each person's activity and groups are
+          re-checked live first, and every change can be undone from the History tab.
         </Text>
         {onToggle && (
           <Box>
@@ -246,9 +246,10 @@ function AuditPanel({ gate, onChanged, version }) {
 
   const protect = async (u, on) => {
     try {
-      await invoke('setProtected', { accountId: u.accountId, protected: on });
+      const res = await invoke('setProtected', { accountId: u.accountId, protected: on });
+      if (!res?.ok) throw new Error(res?.error);
       toggle(u.accountId, false);
-      await loadAll();
+      setRows((prev) => prev.map((r) => (r.accountId === u.accountId ? { ...r, isProtected: on } : r)));
     } catch {
       setMessage('Could not update the protected list. Try again.');
     }
@@ -281,6 +282,8 @@ function AuditPanel({ gate, onChanged, version }) {
   }, [chosen, liveCosts]);
   const scan = scanProgress(state);
   const hasEmails = rows.some((r) => r.email);
+  const scanAgeDays = report?.generatedAt ? Math.floor((Date.now() - Date.parse(report.generatedAt)) / 86_400_000) : 0;
+  const totalSeats = Object.values(report?.dormantByProduct ?? {}).reduce((a, b) => a + b, 0);
 
   /** Reclaim in small batches; read Atlassian's seat counts before and after. */
   const runReclaim = async () => {
@@ -397,7 +400,8 @@ function AuditPanel({ gate, onChanged, version }) {
         <Stack space="space.150">
           <Stack space="space.050">
             <Heading as="h2" size="medium">
-              {report.dormantCount} inactive {report.dormantCount === 1 ? 'seat' : 'seats'}
+              {report.dormantCount} inactive {report.dormantCount === 1 ? 'user' : 'users'}
+              {totalSeats !== report.dormantCount ? ` holding ${totalSeats} seats` : ''}
               {saving !== null ? ` · about ${fmtMoney(saving)} a year` : ''}
             </Heading>
             <Text>
@@ -481,6 +485,15 @@ function AuditPanel({ gate, onChanged, version }) {
             </SectionMessage>
           ))}
 
+          {scanAgeDays >= 7 && !running && (
+            <SectionMessage appearance="warning">
+              <Text>
+                This list is {scanAgeDays} days old. Run a new scan before reclaiming. Anyone active since the scan is
+                skipped at reclaim time, but the list itself is out of date.
+              </Text>
+            </SectionMessage>
+          )}
+
           {report.dormantCount === 0 ? (
             <SectionMessage appearance="success" title="No inactive users">
               <Text>
@@ -543,7 +556,7 @@ function AuditPanel({ gate, onChanged, version }) {
 
               <Inline space="space.100" alignBlock="center" shouldWrap>
                 <Button
-                  onClick={() => setSelected(new Set(readyVisible.map((u) => u.accountId)))}
+                  onClick={() => setSelected((prev) => new Set([...prev, ...readyVisible.map((u) => u.accountId)]))}
                   isDisabled={!readyVisible.length || !gate.allowed}
                 >
                   Select all ready ({readyVisible.length})
@@ -554,9 +567,11 @@ function AuditPanel({ gate, onChanged, version }) {
                 <Button
                   appearance="danger"
                   onClick={() => setConfirmOpen(true)}
-                  isDisabled={!chosen.length || Boolean(progress) || !gate.allowed}
+                  isDisabled={!chosen.length || Boolean(progress) || !gate.allowed || (running && !stale)}
                 >
-                  Reclaim seats for {chosen.length} {chosen.length === 1 ? 'user' : 'users'}
+                  {chosen.length
+                    ? `Reclaim seats for ${chosen.length} ${chosen.length === 1 ? 'user' : 'users'}`
+                    : 'Reclaim seats'}
                 </Button>
                 {chosenSaving !== null && <Text>About {fmtMoney(chosenSaving)} a year for the selected.</Text>}
               </Inline>
@@ -608,7 +623,9 @@ function AuditPanel({ gate, onChanged, version }) {
                       { key: `products-${join(u.products)}`, content: join(u.products) },
                       {
                         key: `last-${u.severity ?? 0}`,
-                        content: <Lozenge appearance={u.severity >= 2 ? 'removed' : 'moved'}>{u.label}</Lozenge>,
+                        content: (
+                          <Lozenge appearance={String(u.bucket).startsWith('over-') ? 'removed' : 'moved'}>{u.label}</Lozenge>
+                        ),
                       },
                       {
                         key: `status-${st.text}`,
@@ -664,8 +681,9 @@ function AuditPanel({ gate, onChanged, version }) {
               <Stack space="space.150">
                 <Text>
                   Each person below is taken out of the listed groups, which removes their access to the listed
-                  products and frees those seats. Their Atlassian account stays active. Groups are re-checked live
-                  before each change, and you can undo any of it from the History tab.
+                  products and frees those seats. Their Atlassian account stays active. Before each change the app
+                  checks live that the person is still inactive and reads their groups again; anyone who has used
+                  Jira since the scan is skipped. You can undo any of it from the History tab.
                 </Text>
                 <DynamicTable
                   head={{
@@ -728,6 +746,9 @@ function Outcome({ outcome }) {
           <Text>
             Atlassian now counts: {changed.map((c) => `${c.name} ${c.before} → ${c.after}`).join(' · ')}
           </Text>
+        )}
+        {done.length > 0 && changed.length === 0 && counts.length > 0 && (
+          <Text>Atlassian's seat counts haven't changed yet. They usually update within a minute.</Text>
         )}
         {skipped.map((r) => (
           <Text key={r.accountId}>

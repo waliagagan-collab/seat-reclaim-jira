@@ -51,9 +51,12 @@ export function matchProduct(query, name) {
 
 /** Pure: the same three groups the page's status filter uses. */
 export function statusOf(u) {
-  if (['reclaimed', 'partial'].includes(u?.lastAction?.status)) return 'reclaimed';
+  if (u?.lastAction?.status === 'reclaimed') return 'reclaimed';
   return u?.reclaimable && !u?.isProtected ? 'ready' : 'blocked';
 }
+
+/** Pure: why a blocked user is blocked, with the protected list applied. */
+export const blockReason = (u) => (u?.isProtected ? 'On your protected list.' : (u?.reason ?? 'Cannot be reclaimed.'));
 
 const STATUS_WORDS = { ready: 'Ready to reclaim', blocked: "Can't reclaim", reclaimed: 'Already reclaimed' };
 
@@ -105,7 +108,8 @@ export const candidateLine = (u) => ({
   inactiveFor: u.label ?? null,
   status: STATUS_WORDS[statusOf(u)],
   wouldFree: statusOf(u) === 'ready' ? (u.freedProducts ?? []) : [],
-  reason: statusOf(u) === 'blocked' ? (u.reason ?? null) : null,
+  reason: statusOf(u) === 'blocked' ? blockReason(u) : null,
+  partlyReclaimed: u.lastAction?.status === 'partial' || undefined,
 });
 
 /** Pure: the reclaim summary over decorated rows. */
@@ -122,7 +126,7 @@ export function reclaimSummary(meta, rows, settings, roles = null, product = '')
   }
   const reasons = {};
   for (const u of groups.blocked) {
-    const r = u.reason ?? 'Cannot be reclaimed.';
+    const r = blockReason(u);
     reasons[r] = (reasons[r] ?? 0) + 1;
   }
   const prices = settings?.seatCosts ?? {};

@@ -79,11 +79,28 @@ export async function markActive(run, accountIds) {
 export const getShardUsers = async (run, s) => (await kvs.get(usersKey(run, s))) ?? {};
 export const getShardActive = async (run, s) => (await kvs.get(activeKey(run, s))) ?? {};
 
+/**
+ * Pure: add rows to a shard's dormant list without duplicating an account.
+ * A slice that dies after this write but before its cursor commit is replayed
+ * from the old cursor, so the same users arrive twice.
+ */
+export function mergeDormant(existing, rows) {
+  const seen = new Set((existing ?? []).map((r) => r.accountId));
+  const out = [...(existing ?? [])];
+  for (const r of rows ?? []) {
+    if (!seen.has(r.accountId)) {
+      seen.add(r.accountId);
+      out.push(r);
+    }
+  }
+  return out;
+}
+
 export async function appendDormant(run, s, rows) {
   if (!rows.length) return;
   const key = dormantKey(run, s);
   const existing = (await kvs.get(key)) ?? [];
-  await kvs.set(key, existing.concat(rows));
+  await kvs.set(key, mergeDormant(existing, rows));
 }
 
 /**

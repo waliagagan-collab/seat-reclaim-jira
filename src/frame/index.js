@@ -19,9 +19,15 @@ export const tableOf = (rows) => [
     r.email ?? '',
     (r.products ?? []).join(' / '),
     r.label ?? '',
-    r.lastAction?.status === 'reclaimed' ? 'Already reclaimed' : r.reclaimable && !r.isProtected ? 'Yes' : 'No',
+    r.lastAction?.status === 'reclaimed'
+      ? 'Already reclaimed'
+      : r.reclaimable && !r.isProtected
+        ? r.lastAction?.status === 'partial'
+          ? 'Yes (partly reclaimed)'
+          : 'Yes'
+        : 'No',
     (r.freedProducts ?? []).join(' / '),
-    r.reason ?? '',
+    r.isProtected ? 'On your protected list.' : (r.reason ?? ''),
     r.accountId,
   ]),
 ];

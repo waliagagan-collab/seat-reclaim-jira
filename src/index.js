@@ -16,12 +16,13 @@ import {
   getSettings,
   saveSettings,
 } from './lib/store.js';
-import { fetchUsersBulk, fetchApplicationRoles } from './lib/jira.js';
+import { fetchUsersBulk, fetchApplicationRoles, wasActiveWithin } from './lib/jira.js';
 import { adminOnly } from './lib/admin.js';
 import { normaliseDays, isStale, licenseGate, licenseMessage } from './lib/scan.js';
 import { normaliseSeatCosts } from './lib/ui.js';
 import { decorate, protectedReasonFor } from './lib/decorate.js';
 import {
+  buildGroupsMeta,
   planReclaim,
   reasonText,
   fetchUserGroupIds,
@@ -86,7 +87,7 @@ define('startScan', async ({ payload, context }) => {
   } catch (err) {
     await setScanState({
       ...state,
-      status: 'error',
+      status: 'failed',
       phase: 'failed',
       finishedAt: new Date().toISOString(),
       error: `Could not queue the scan: ${err?.message ?? err}`,
@@ -154,9 +155,10 @@ define('setProtected', async ({ payload, context }) => {
 // --- reclaim and undo -------------------------------------------------------------
 
 /**
- * Reclaim seats for up to RECLAIM_BATCH accounts. For each one: read their
- * groups live, plan again (the snapshot may be out of date), leave the planned
- * groups as the signed-in admin, and log exactly what changed.
+ * Reclaim seats for up to RECLAIM_BATCH accounts. For each one: check they are
+ * still inactive, read their groups live, plan again against a live group map
+ * (the scan is a snapshot), leave the planned groups as the signed-in admin,
+ * and log exactly what changed.
  */
 define('reclaim', async ({ payload, context }) => {
   const refused = licenseRefusal(context);
@@ -165,14 +167,27 @@ define('reclaim', async ({ payload, context }) => {
   const ids = [...new Set((payload?.accountIds ?? []).map(String))].slice(0, RECLAIM_BATCH);
   if (!ids.length) return { ok: false, error: 'No users selected.' };
 
-  const [meta, protectedList] = await Promise.all([getReportMeta(), getProtected()]);
-  const groupsMeta = meta?.groupsMeta ?? {};
+  const [meta, protectedList, roles] = await Promise.all([
+    getReportMeta(),
+    getProtected(),
+    // Groups added or renamed since the scan would otherwise be missed, and the
+    // app would report a seat freed that is not.
+    fetchApplicationRoles().catch(() => null),
+  ]);
+  const groupsMeta = roles?.length ? buildGroupsMeta(roles) : (meta?.groupsMeta ?? {});
+  const days = normaliseDays(meta?.days);
   const me = context?.accountId;
   const results = [];
 
   for (const accountId of ids) {
     const at = new Date().toISOString();
     try {
+      // The list may be weeks old. Someone who has used Jira since the scan is
+      // no longer inactive, whatever the list says.
+      if (await wasActiveWithin(accountId, days)) {
+        results.push({ accountId, ok: false, skipped: true, error: reasonText({ reclaimable: false, reason: 'active-since-scan' }) });
+        continue;
+      }
       const plan = planReclaim({
         userGroupIds: await fetchUserGroupIds(accountId),
         groupsMeta,

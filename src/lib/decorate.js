@@ -10,6 +10,10 @@ export const protectedReasonFor = (accountId, protectedList, me) =>
  * Stored rows carry account IDs only. Names and emails are attached here, at
  * read time, so they are always current and never sit in storage. Each row
  * also gets its reclaim plan from the scan snapshot and the latest action.
+ *
+ * The plan ignores the protected list on purpose: `isProtected` is reported
+ * beside it, so the page can flip protection on one row without reloading
+ * everything. The reclaim resolver enforces the list itself.
  */
 export async function decorate(rows, context) {
   const [people, meta, protectedList, latest] = await Promise.all([
@@ -23,7 +27,7 @@ export async function decorate(rows, context) {
     const plan = planReclaim({
       userGroupIds: r.groups,
       groupsMeta: meta?.groupsMeta ?? {},
-      protectedReason: protectedReasonFor(r.accountId, protectedList, me),
+      protectedReason: r.accountId === me ? 'self' : null,
     });
     return {
       ...r,

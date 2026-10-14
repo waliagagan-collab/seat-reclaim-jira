@@ -22,7 +22,9 @@ import api, { route } from '@forge/api';
 // ---------------------------------------------------------------------------
 
 /** Groups the app will never remove anyone from. Deliberately broad. */
-export const isAdminGroup = (name) => /admin/i.test(String(name ?? ''));
+// "admin" as a word (site-admins, org-admins, administrators, jira-admins-x,
+// sysadmins), not as part of another word (badminton, administrative).
+export const isAdminGroup = (name) => /(^|[^a-z])(sys)?admin(s|istrator|istrators)?($|[^a-z])/i.test(String(name ?? ''));
 
 /**
  * Pure: role rows (normaliseRoles) -> { groupId -> { name, products[] } }.
@@ -158,6 +160,16 @@ export function explainChange(status, body) {
 export const alreadyMember = (status, body) =>
   status === 400 && /already a member/i.test((body?.errorMessages ?? []).join(' '));
 
+/** Pure: the products a set of group changes actually freed (only groups that were left count). */
+export function freedProductsFrom(changes, keptProducts = []) {
+  const kept = new Set((keptProducts ?? []).map((k) => k.product));
+  const freed = new Set((changes ?? []).filter((c) => c.ok).flatMap((c) => c.products ?? []));
+  return [...freed].filter((p) => !kept.has(p)).sort();
+}
+
+export const NO_REPLY_MESSAGE =
+  "Jira did not answer. The change may or may not have gone through; check the person's groups in Atlassian Administration before trying again.";
+
 // ---------------------------------------------------------------------------
 // Side effects (all as the signed-in admin)
 // ---------------------------------------------------------------------------
@@ -186,12 +198,20 @@ export async function fetchUserGroupIds(accountId) {
 export async function removeFromGroups(accountId, groups) {
   const results = [];
   for (const g of groups) {
-    const res = await api
-      .asUser()
-      .requestJira(route`/rest/api/3/group/user?groupId=${g.groupId}&accountId=${accountId}`, {
-        method: 'DELETE',
-        headers: JSON_HEADERS,
-      });
+    let res;
+    try {
+      res = await api
+        .asUser()
+        .requestJira(route`/rest/api/3/group/user?groupId=${g.groupId}&accountId=${accountId}`, {
+          method: 'DELETE',
+          headers: JSON_HEADERS,
+        });
+    } catch {
+      // No response at all. The removal may have happened, so it is recorded
+      // as unknown: undo re-adds it, and the admin is told to check.
+      results.push({ groupId: g.groupId, name: g.name, products: g.products, ok: false, unknown: true, error: NO_REPLY_MESSAGE });
+      continue;
+    }
     const ok = res.ok;
     results.push({
       groupId: g.groupId,
@@ -208,13 +228,19 @@ export async function removeFromGroups(accountId, groups) {
 export async function addToGroups(accountId, groups) {
   const results = [];
   for (const g of groups) {
-    const res = await api
-      .asUser()
-      .requestJira(route`/rest/api/3/group/user?groupId=${g.groupId}`, {
-        method: 'POST',
-        headers: JSON_HEADERS,
-        body: JSON.stringify({ accountId }),
-      });
+    let res;
+    try {
+      res = await api
+        .asUser()
+        .requestJira(route`/rest/api/3/group/user?groupId=${g.groupId}`, {
+          method: 'POST',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ accountId }),
+        });
+    } catch {
+      results.push({ groupId: g.groupId, name: g.name, ok: false, unknown: true, error: NO_REPLY_MESSAGE });
+      continue;
+    }
     const body = res.ok ? null : await bodyOf(res);
     const ok = res.ok || alreadyMember(res.status, body);
     results.push({ groupId: g.groupId, name: g.name, ok, error: ok ? null : explainChange(res.status, body) });

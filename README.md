@@ -27,7 +27,7 @@ site admin can scan and review, and gets a clear message if they try to reclaim.
 
 ## Permissions
 
-Read scopes as License Audit, plus one write scope, `manage:jira-configuration`, used only
+Read scopes as License Audit, plus one write scope, `write:group:jira`, used only
 for `DELETE` and `POST /rest/api/3/group/user`. A test enforces that this is the only write
 scope and that no other module makes write calls.
 

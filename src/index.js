@@ -27,6 +27,7 @@ import {
   reasonText,
   fetchUserGroupIds,
   removeFromGroups,
+  freedProductsFrom,
   addToGroups,
 } from './lib/reclaim.js';
 
@@ -45,7 +46,7 @@ const queue = new Queue({ key: 'scan-queue' });
 const EXPORT_LIMIT = 5000;
 // A resolver call has a hard time limit, so reclaim runs in small batches and
 // the page loops. Each user costs one read plus one call per group.
-export const RECLAIM_BATCH = 5;
+export const RECLAIM_BATCH = 3; // small, so a batch always finishes inside the resolver's 25 s limit
 
 const licenseRefusal = (context) => {
   const gate = licenseGate(context?.license, context?.environmentType);
@@ -79,11 +80,12 @@ define('startScan', async ({ payload, context }) => {
     finishedAt: null,
     error: null,
     warnings: [],
+    seq: 0,
   };
   await setScanState(state);
 
   try {
-    await queue.push({ body: { run: state.run } });
+    await queue.push({ body: { run: state.run, seq: 0 } });
   } catch (err) {
     await setScanState({
       ...state,
@@ -206,8 +208,9 @@ define('reclaim', async ({ payload, context }) => {
         results.push({ accountId, ok: false, skipped: true, error: reasonText(plan) });
         continue;
       }
-      const changes = await removeFromGroups(accountId, plan.remove);
-      const okCount = changes.filter((c) => c.ok).length;
+      // The log entry is written BEFORE anything changes, as "pending", so a
+      // timeout or dropped connection mid-way can never leave a removed group
+      // with no record and no undo. It is updated once Jira has answered.
       const entry = {
         id: newEntryId(),
         type: 'reclaim',
@@ -215,19 +218,38 @@ define('reclaim', async ({ payload, context }) => {
         by: me ?? null,
         at,
         updatedAt: at,
-        status: okCount === changes.length ? 'reclaimed' : okCount ? 'partial' : 'failed',
-        freedProducts: plan.freedProducts,
+        status: 'pending',
+        freedProducts: [],
         keptProducts: plan.keptProducts,
-        groups: changes,
+        groups: plan.remove.map((g) => ({ groupId: g.groupId, name: g.name, products: g.products, ok: false, pending: true })),
         days: meta?.days ?? null,
       };
-      if (okCount) await saveEntry(entry); // nothing changed, nothing to undo
+      await saveEntry(entry);
+
+      const changes = await removeFromGroups(accountId, plan.remove);
+      const okCount = changes.filter((c) => c.ok).length;
+      const unknownCount = changes.filter((c) => c.unknown).length;
+      entry.groups = changes;
+      entry.freedProducts = freedProductsFrom(changes, plan.keptProducts);
+      entry.updatedAt = new Date().toISOString();
+      entry.status = okCount === changes.length ? 'reclaimed' : okCount || unknownCount ? 'partial' : 'failed';
+      let logged = true;
+      try {
+        await saveEntry(entry);
+      } catch {
+        logged = false;
+      }
+      const failedChange = changes.find((c) => !c.ok);
       results.push({
         accountId,
         ok: okCount === changes.length,
-        entryId: okCount ? entry.id : null,
-        freedProducts: plan.freedProducts,
-        error: changes.find((c) => !c.ok)?.error ?? null,
+        partial: okCount > 0 && okCount < changes.length,
+        entryId: entry.id,
+        freedProducts: entry.freedProducts,
+        groupsLeft: changes.filter((c) => c.ok).map((c) => c.name),
+        error: !logged
+          ? "The groups were left, but the change could not be written to History. Check the person's groups in Atlassian Administration."
+          : (failedChange?.error ?? null),
       });
     } catch (err) {
       results.push({ accountId, ok: false, error: String(err?.message ?? err) });
@@ -241,13 +263,19 @@ define('reclaim', async ({ payload, context }) => {
   };
 });
 
-/** Put a user back in exactly the groups one reclaim removed. */
+/**
+ * Put a user back in exactly the groups one reclaim removed. Deliberately not
+ * behind the licence gate: a site whose subscription lapsed must still be able
+ * to give people their access back.
+ */
 define('undo', async ({ payload, context }) => {
   const entry = await getEntry(String(payload?.entryId ?? ''));
   if (!entry || entry.type !== 'reclaim') return { ok: false, error: 'That action was not found.' };
   if (entry.status === 'restored') return { ok: true, already: true };
 
-  const removed = (entry.groups ?? []).filter((g) => g.ok);
+  // Groups that were left, plus any whose removal got no answer or was
+  // interrupted: adding someone who is still a member is harmless.
+  const removed = (entry.groups ?? []).filter((g) => g.ok || g.unknown || g.pending);
   const changes = await addToGroups(entry.accountId, removed);
   const allBack = changes.every((c) => c.ok);
   const at = new Date().toISOString();

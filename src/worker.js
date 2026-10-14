@@ -59,6 +59,10 @@ export async function handler(event) {
   if (!state || state.status !== 'running' || state.run !== body.run) {
     return; // superseded or cancelled: drop the event, do not re-queue
   }
+  // Events are delivered at least once. Every commit bumps `seq` and sends it
+  // with the next event, so a duplicate or late copy is dropped instead of
+  // running the slice twice and forking the scan.
+  if ((body.seq ?? 0) !== (state.seq ?? 0)) return;
 
   try {
     let live;
@@ -116,11 +120,28 @@ export async function handler(event) {
  */
 async function commit(state, patch, { requeue = true } = {}) {
   const fresh = await getScanState();
-  if (!fresh || fresh.run !== state.run || fresh.status !== 'running') return false;
-  const next = { ...fresh, ...patch };
+  if (!fresh || fresh.run !== state.run || fresh.status !== 'running') {
+    // This slice's scratch writes belong to a run nobody will finish.
+    await clearRun(state.run);
+    return false;
+  }
+  // The seq only moves when a new event is sent; a pause (rate limit) keeps
+  // it, so the platform's retry of the same event is still accepted.
+  const seq = requeue ? (fresh.seq ?? 0) + 1 : (fresh.seq ?? 0);
+  const next = { ...fresh, ...patch, seq };
   await setScanState(next);
-  if (requeue) await queue.push({ body: { run: state.run } });
+  if (requeue) await queue.push({ body: { run: state.run, seq } });
   return true;
+}
+
+/**
+ * A rate limit mid-slice: save what the slice collected so far, commit the
+ * cursor without re-queueing, then rethrow so the handler asks the platform
+ * to retry after Retry-After. The retry resumes from the committed cursor.
+ */
+async function pause(state, patch, err) {
+  await commit(state, patch, { requeue: false });
+  throw err;
 }
 
 async function fail(state, error) {
@@ -198,9 +219,19 @@ async function doMembers(state) {
   const groupQueue = [...(state.groupQueue ?? [])];
   const collected = [];
 
+  let paused = null;
   for (let i = 0; i < SLICE.memberPages && groupQueue.length && !overBudget(t0); i++) {
     const head = groupQueue[0];
-    const page = await fetchGroupMemberPage(head.groupId, head.startAt);
+    let page;
+    try {
+      page = await fetchGroupMemberPage(head.groupId, head.startAt);
+    } catch (err) {
+      if (err.rateLimited) {
+        paused = err;
+        break;
+      }
+      throw err;
+    }
     for (const u of page.users) {
       collected.push({ ...u, products: [head.roleName], groups: [head.groupId] });
     }
@@ -211,13 +242,15 @@ async function doMembers(state) {
   if (collected.length) await upsertUsers(state.run, collected);
 
   const usersFound = (state.usersFound ?? 0) + collected.length;
-  const done = groupQueue.length === 0;
-  return commit(state, {
+  const done = groupQueue.length === 0 && !paused;
+  const patch = {
     groupQueue,
     usersFound,
     phase: done ? 'issues' : 'members',
     ...(done ? { issueToken: null, issuePages: 0, issuesScanned: 0 } : {}),
-  });
+  };
+  if (paused) return pause(state, patch, paused);
+  return commit(state, patch);
 }
 
 // --- directory (fallback) ---------------------------------------------------
@@ -228,8 +261,18 @@ async function doDirectory(state) {
   let isLast = false;
   const collected = [];
 
+  let paused = null;
   for (let i = 0; i < SLICE.directoryPages && !overBudget(t0); i++) {
-    const page = await fetchDirectoryPage(startAt, DIRECTORY_PAGE);
+    let page;
+    try {
+      page = await fetchDirectoryPage(startAt, DIRECTORY_PAGE);
+    } catch (err) {
+      if (err.rateLimited) {
+        paused = err;
+        break;
+      }
+      throw err;
+    }
     for (const u of page.users) collected.push({ ...u, products: ['Jira'] });
     startAt += DIRECTORY_PAGE;
     if (page.isLast) {
@@ -240,12 +283,14 @@ async function doDirectory(state) {
 
   if (collected.length) await upsertUsers(state.run, collected);
 
-  return commit(state, {
+  const patch = {
     directoryCursor: startAt,
     usersFound: (state.usersFound ?? 0) + collected.length,
     phase: isLast ? 'issues' : 'directory',
     ...(isLast ? { issueToken: null, issuePages: 0, issuesScanned: 0 } : {}),
-  });
+  };
+  if (paused) return pause(state, patch, paused);
+  return commit(state, patch);
 }
 
 // --- issues (sweep) ---------------------------------------------------------
@@ -259,8 +304,18 @@ async function doIssues(state) {
   let truncated = false;
   const active = new Set();
 
+  let paused = null;
   for (let i = 0; i < SLICE.issuePages && !overBudget(t0); i++) {
-    const page = await fetchActivityPage(state.days, token, ISSUE_PAGE);
+    let page;
+    try {
+      page = await fetchActivityPage(state.days, token, ISSUE_PAGE);
+    } catch (err) {
+      if (err.rateLimited) {
+        paused = err;
+        break;
+      }
+      throw err;
+    }
     for (const id of Object.keys(page.activity)) active.add(id);
     scanned += page.count;
     pages += 1;
@@ -279,14 +334,16 @@ async function doIssues(state) {
 
   if (active.size) await markActive(state.run, [...active]);
 
-  return commit(state, {
+  const patch = {
     issueToken: token,
     issuePages: pages,
     issuesScanned: scanned,
     sweepTruncated: Boolean(state.sweepTruncated) || truncated,
     phase: done ? 'verify' : 'issues',
     ...(done ? { verifyShard: 0, verifyIndex: 0, verified: 0, dormantFound: 0 } : {}),
-  });
+  };
+  if (paused) return pause(state, patch, paused);
+  return commit(state, patch);
 }
 
 // --- verify -----------------------------------------------------------------
@@ -303,8 +360,9 @@ async function doVerify(state) {
   let verified = state.verified ?? 0;
   let dormantFound = state.dormantFound ?? 0;
   let checked = 0;
+  let paused = null;
 
-  while (shard < SHARDS && checked < SLICE.verifyUsers && !overBudget(t0)) {
+  while (shard < SHARDS && checked < SLICE.verifyUsers && !overBudget(t0) && !paused) {
     const users = await getShardUsers(state.run, shard);
     const activeSet = await getShardActive(state.run, shard);
     const ids = Object.keys(users).sort();
@@ -312,10 +370,28 @@ async function doVerify(state) {
 
     while (index < ids.length && checked < SLICE.verifyUsers && !overBudget(t0)) {
       const accountId = ids[index];
-      index += 1;
-      if (activeSet[accountId]) continue; // sweep already proved them active
+      if (activeSet[accountId]) {
+        index += 1;
+        continue; // sweep already proved them active
+      }
 
-      const result = await verifyCandidate(accountId, state.days);
+      let result;
+      try {
+        result = await verifyCandidate(accountId, state.days);
+      } catch (err) {
+        if (err.rateLimited) {
+          paused = err; // this user is re-verified when the slice resumes
+          break;
+        }
+        if (err.status === 400) {
+          // Jira rejects the account (removed since the listing, or an unusual
+          // id). Treated as active: never listed as inactive on a guess.
+          result = { active: true };
+        } else {
+          throw err;
+        }
+      }
+      index += 1;
       checked += 1;
       verified += 1;
       if (!result.active) {
@@ -339,14 +415,16 @@ async function doVerify(state) {
     }
   }
 
-  const done = shard >= SHARDS;
-  return commit(state, {
+  const done = shard >= SHARDS && !paused;
+  const patch = {
     verifyShard: shard,
     verifyIndex: index,
     verified,
     dormantFound,
     phase: done ? 'finalize' : 'verify',
-  });
+  };
+  if (paused) return pause(state, patch, paused);
+  return commit(state, patch);
 }
 
 // --- finalize ---------------------------------------------------------------

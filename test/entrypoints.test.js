@@ -50,7 +50,7 @@ test('the manifest has exactly one write scope', async () => {
   const manifest = readFileSync(new URL('../manifest.yml', import.meta.url), 'utf8');
   const scopes = [...manifest.matchAll(/^\s+- ((?:read|write|manage|delete|storage):[\w:-]+)/gm)].map((m) => m[1]);
   const writeScopes = scopes.filter((s) => !s.startsWith('read:') && s !== 'storage:app');
-  assert.deepEqual(writeScopes, ['manage:jira-configuration']);
+  assert.deepEqual(writeScopes, ['write:group:jira']);
 });
 
 test('table cell keys are prefixed strings, so two cells in a row can never share a key', async () => {

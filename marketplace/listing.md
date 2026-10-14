@@ -90,7 +90,7 @@ Totals: $90 at 100 users, $165 at 250, $240 at 500, $390 at 1,000. Multi-instanc
 | `read:avatar:jira` | Required alongside `read:user:jira` by the group-member endpoint; avatars are not shown. |
 | `read:jira-user` | Read a user's current groups just before a reclaim, and fall back to the site directory if roles are unreadable. |
 | `read:jira-work` | Search recently updated issues and read changelog, comment and worklog authors to decide who was active. Issue content is never stored. |
-| `manage:jira-configuration` | The one write scope: remove a user from a product access group (reclaim) and add them back (undo), both as the signed-in site admin after they confirm. Jira requires a site admin for both. |
+| `write:group:jira` | The one write scope: remove a user from a product access group (reclaim) and add them back (undo), both as the signed-in site admin after they confirm. Jira requires a site admin for both. |
 | `storage:app` | Keep scan progress, the report, the protected list, the reclaim history and seat prices in Forge hosted storage. |
 
 **Egress:** none. No remote hostnames. **Runs on Atlassian:** eligible.

@@ -8,6 +8,7 @@ import {
   explainChange,
   isIdpManaged,
   alreadyMember,
+  freedProductsFrom,
 } from '../src/lib/reclaim.js';
 
 // The demo site, as read on 10 October 2026: real people get Jira Software,
@@ -21,10 +22,14 @@ const ROLES = [
 const META = buildGroupsMeta(ROLES);
 
 test('admin groups are recognised however they are named', () => {
-  for (const n of ['site-admins', 'org-admins', 'administrators', 'jira-admins-acme', 'Jira-Administrators']) {
+  for (const n of ['site-admins', 'org-admins', 'administrators', 'jira-admins-acme', 'Jira-Administrators', 'sysadmins', 'admin']) {
     assert.equal(isAdminGroup(n), true, n);
   }
   for (const n of ['jira-users-acme', 'jira-servicemanagement-users-acme', 'confluence-users', '']) {
+    assert.equal(isAdminGroup(n), false, n);
+  }
+  // "admin" inside another word is not an admin group.
+  for (const n of ['badminton-club', 'administrative-assistants', 'padmin']) {
     assert.equal(isAdminGroup(n), false, n);
   }
 });
@@ -124,4 +129,14 @@ test('undo treats "already a member" as restored', () => {
   assert.equal(alreadyMember(400, { errorMessages: ['Cannot add user. User is already a member of jira-users'] }), true);
   assert.equal(alreadyMember(400, { errorMessages: ['Something else'] }), false);
   assert.equal(alreadyMember(500, null), false);
+});
+
+test('only groups that were actually left count as freed products', () => {
+  const changes = [
+    { groupId: 'g1', name: 'jira-software-users', products: ['Jira Software'], ok: true },
+    { groupId: 'g2', name: 'jira-servicemanagement-users', products: ['Jira Service Management'], ok: false, error: 'refused' },
+  ];
+  assert.deepEqual(freedProductsFrom(changes), ['Jira Software']);
+  assert.deepEqual(freedProductsFrom(changes, [{ product: 'Jira Software', via: 'site-admins' }]), []);
+  assert.deepEqual(freedProductsFrom(undefined), []);
 });

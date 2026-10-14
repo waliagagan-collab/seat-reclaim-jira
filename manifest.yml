@@ -130,8 +130,8 @@ permissions:
     - read:group:jira
     - read:user:jira
     - read:avatar:jira
-    # The one write scope. It is used for exactly two calls, both made as the
-    # signed-in site admin after they confirm: leave a product access group
+    # The one write scope, and the narrowest that covers the two calls made as
+    # the signed-in site admin after they confirm: leave a product access group
     # (reclaim) and rejoin it (undo). Jira itself requires a site admin for both.
-    - manage:jira-configuration
+    - write:group:jira
     - storage:app

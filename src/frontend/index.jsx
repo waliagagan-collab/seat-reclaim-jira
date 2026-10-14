@@ -67,7 +67,7 @@ const PERIODS = [30, 60, 90, 180, 365].map((d) => ({
 }));
 
 // Must match RECLAIM_BATCH in src/index.js; the backend caps it anyway.
-const BATCH = 5;
+const BATCH = 3; // matches RECLAIM_BATCH in the resolver
 
 const phaseText = (s) => {
   switch (s?.phase) {
@@ -95,6 +95,7 @@ const join = (xs) => (xs ?? []).join(', ') || '—';
 function rowStatus(u) {
   const last = u.lastAction?.status;
   if (last === 'reclaimed') return { text: 'Reclaimed', appearance: 'success' };
+  if (last === 'pending') return { text: 'Interrupted', appearance: 'moved' };
   if (last === 'partial') return { text: 'Partly reclaimed', appearance: 'moved' };
   if (u.isProtected) return { text: 'Protected', appearance: 'default' };
   if (!u.reclaimable) return { text: 'Can’t reclaim', appearance: 'default' };
@@ -102,7 +103,9 @@ function rowStatus(u) {
 }
 
 // A partly reclaimed user still has groups to leave, so they stay selectable.
-const canSelect = (u) => u.reclaimable && !u.isProtected && u.lastAction?.status !== 'reclaimed';
+// An interrupted reclaim (no answer from Jira) is sorted out from History first.
+const canSelect = (u) =>
+  u.reclaimable && !u.isProtected && u.lastAction?.status !== 'reclaimed' && u.lastAction?.status !== 'pending';
 
 // ---------------------------------------------------------------------------
 // Inactive users tab
@@ -138,7 +141,7 @@ const HowItWorks = ({ compact, onToggle }) =>
         <Text>
           Run a scan to find licensed users who did <Strong>nothing in Jira</Strong> in the period: no status change,
           field edit, comment, logged work, or issue created or reported. Every candidate is checked against all issues
-          on the site. Then pick who to reclaim. The app takes them out of the groups that give them that product,
+          the app can see (projects it cannot browse are invisible to it). Then pick who to reclaim. The app takes them out of the groups that give them that product,
           which frees the seat. Admins, app accounts and you are never touched, and you can <Strong>Protect</Strong>{' '}
           anyone else you want left alone. Nothing changes until you confirm; each person's activity and groups are
           re-checked live first, and every change can be undone from the History tab.
@@ -347,9 +350,15 @@ function AuditPanel({ gate, onChanged, version }) {
         } else {
           results.push(...(res.results ?? []));
         }
-      } catch (err) {
+      } catch {
+        // No answer: the groups may well have been left. History is the truth.
         results.push(
-          ...ids.slice(i, i + BATCH).map((accountId) => ({ accountId, ok: false, error: err?.message ?? 'No response' }))
+          ...ids.slice(i, i + BATCH).map((accountId) => ({
+            accountId,
+            ok: false,
+            unknown: true,
+            error: 'No reply from Jira. The change may have gone through; check the History tab before trying again.',
+          }))
         );
       }
     }
@@ -723,8 +732,9 @@ function AuditPanel({ gate, onChanged, version }) {
                 <Text>
                   Each person below is taken out of the listed groups, which removes their access to the listed
                   products and frees those seats. Their Atlassian account stays active. Before each change the app
-                  checks live that the person is still inactive and reads their groups again; anyone who has used
-                  Jira since the scan is skipped. You can undo any of it from the History tab.
+                  reads their groups again and checks live that they are still inactive: anyone who created, changed,
+                  transitioned, reassigned or logged work on an issue since the scan is skipped (a comment alone is only
+                  seen by a new scan). You can undo any of it from the History tab.
                 </Text>
                 <DynamicTable
                   head={{
@@ -765,8 +775,10 @@ function AuditPanel({ gate, onChanged, version }) {
 function Outcome({ outcome }) {
   const { results, before, after } = outcome;
   const done = results.filter((r) => r.ok);
+  const partial = results.filter((r) => !r.ok && r.partial);
+  const unknown = results.filter((r) => !r.ok && r.unknown);
   const skipped = results.filter((r) => !r.ok && r.skipped);
-  const failed = results.filter((r) => !r.ok && !r.skipped);
+  const failed = results.filter((r) => !r.ok && !r.skipped && !r.partial && !r.unknown);
   const counts =
     before?.products && after?.products
       ? before.products.map((p) => ({
@@ -779,7 +791,7 @@ function Outcome({ outcome }) {
 
   return (
     <SectionMessage
-      appearance={failed.length ? 'warning' : 'success'}
+      appearance={failed.length || partial.length || unknown.length ? 'warning' : 'success'}
       title={`Reclaimed seats for ${done.length} of ${results.length} ${results.length === 1 ? 'user' : 'users'}`}
     >
       <Stack space="space.100">
@@ -791,9 +803,19 @@ function Outcome({ outcome }) {
         {done.length > 0 && changed.length === 0 && counts.length > 0 && (
           <Text>Atlassian's seat counts haven't changed yet. They usually update within a minute.</Text>
         )}
+        {partial.map((r) => (
+          <Text key={r.accountId}>
+            Partly done for {r.displayName ?? r.accountId}: left {(r.groupsLeft ?? []).join(', ') || '—'}. {r.error}
+          </Text>
+        ))}
         {skipped.map((r) => (
           <Text key={r.accountId}>
             Skipped {r.displayName}: {r.error}
+          </Text>
+        ))}
+        {unknown.map((r) => (
+          <Text key={r.accountId}>
+            Result unknown for {r.displayName ?? r.accountId}: {r.error}
           </Text>
         ))}
         {failed.map((r) => (
@@ -814,6 +836,8 @@ function Outcome({ outcome }) {
 const STATUS = {
   reclaimed: { text: 'Reclaimed', appearance: 'success' },
   partial: { text: 'Partly reclaimed', appearance: 'moved' },
+  pending: { text: 'Interrupted', appearance: 'moved' },
+  failed: { text: 'Not done', appearance: 'removed' },
   restored: { text: 'Undone', appearance: 'default' },
 };
 

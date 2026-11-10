@@ -74,6 +74,28 @@ test('creator and reporter are stamped at created, never at updated', () => {
   assert.equal(activity.old.at, '2024-01-01T00:00:00.000+0000');
 });
 
+test('a reporter who did not create the issue did nothing: an agent or a rule raised it for them', () => {
+  const activity = reduceIssues([
+    {
+      fields: {
+        created: '2026-09-10T00:00:00.000+0000',
+        creator: person('agent'),
+        reporter: person('named'),
+      },
+    },
+    {
+      fields: {
+        created: '2026-09-11T00:00:00.000+0000',
+        creator: person('self'),
+        reporter: person('self'),
+      },
+    },
+  ]);
+  assert.equal(activity.named, undefined, 'being named as reporter is not activity');
+  assert.ok(activity.agent);
+  assert.ok(activity.self);
+});
+
 test('keeps the latest timestamp across mixed UTC offsets', () => {
   // 09:00+0530 is 03:30Z — EARLIER than 05:00Z, but sorts LATER as a string.
   const activity = reduceIssues([
@@ -200,10 +222,25 @@ test('per-user JQL quotes the account id and only lists things the user DID', ()
   }
   assert.ok(jql.includes('worklogAuthor ='));
   assert.ok(jql.includes('creator ='));
-  assert.ok(jql.includes('worklogAuthor ='));
-  assert.ok(jql.includes('creator ='));
   assert.ok(!/assignee = /.test(jql), 'assignee equality is not a signal');
+  assert.ok(!/reporter = /.test(jql), 'being named as reporter is not something the user did');
   assert.ok(jql.includes('startOfDay(-90d)'));
+});
+
+test('per-user JQL asks Jira for everything the user updated, comments included, in the same window', () => {
+  // updatedBy() is what sees comments and edits to any field. Without it the
+  // query cannot stand on its own, because the sweep sees only part of a busy issue.
+  assert.ok(buildUserActivityJql('557058:abc-def', 90).startsWith('(issue in updatedBy("557058:abc-def", "-90d")) OR '));
+  assert.ok(buildUserActivityJql('u', 365).includes('issue in updatedBy("u", "-365d")'), 'the wider probes use it too');
+  // A quote in an id stays inside the string.
+  assert.ok(buildUserActivityJql('a"b', 30).includes('updatedBy("a\\"b", "-30d")'));
+});
+
+test('the retry query leaves out only the work log clause', () => {
+  const full = buildUserActivityJql('u', 90);
+  const retry = buildUserActivityJql('u', 90, { worklogs: false });
+  assert.ok(!/worklog/i.test(retry));
+  assert.equal(retry, full.replace(' OR (worklogAuthor = "u" AND worklogDate >= -90d)', ''));
 });
 
 // --- dormancy bands -----------------------------------------------------------

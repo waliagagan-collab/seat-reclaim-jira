@@ -1,3 +1,4 @@
+import api, { route } from '@forge/api';
 import { Queue, InvocationError, InvocationErrorCode } from '@forge/events';
 import {
   fetchApplicationRoles,
@@ -5,6 +6,7 @@ import {
   fetchDirectoryPage,
   fetchActivityPage,
   verifyCandidate,
+  wasActiveWithin,
 } from './lib/jira.js';
 import {
   SHARDS,
@@ -18,7 +20,7 @@ import {
   buildReport,
   clearRun,
 } from './lib/store.js';
-import { buildGroupsMeta } from './lib/reclaim.js';
+import { buildGroupsMeta, adminGroupNames } from './lib/reclaim.js';
 
 const queue = new Queue({ key: 'scan-queue' });
 
@@ -33,12 +35,16 @@ const queue = new Queue({ key: 'scan-queue' });
  * hundreds. If a slice dies mid-way, the next event resumes from the last
  * committed cursor; every write is idempotent, so replaying is safe.
  */
+// Forge stops a chain of queue events after 1,000 pushes, so a slice does as
+// much as its time allows: the manifest gives the function 300 seconds and a
+// slice stops itself at 240. The counts below only bound what one slice holds
+// in memory before it writes.
 const SLICE = {
-  memberPages: 30,
-  directoryPages: 20,
-  issuePages: 12,
-  verifyUsers: 40,
-  softBudgetMs: 38_000, // stop early; the manifest gives the function 60s
+  memberPages: 200,
+  directoryPages: 120,
+  issuePages: 75,
+  verifyUsers: 250,
+  softBudgetMs: 240_000, // stop early; the manifest gives the function 300s
 };
 const DIRECTORY_PAGE = 200;
 const ISSUE_PAGE = 50;
@@ -46,7 +52,10 @@ const MAX_ISSUE_PAGES = 400; // sweep ceiling; verify makes a partial sweep harm
 const MAX_TRANSIENT_RETRIES = 6;
 
 export const SWEEP_TRUNCATED_WARNING =
-  `This site had more than ${MAX_ISSUE_PAGES * ISSUE_PAGE} issues updated in the window, so the activity sweep stopped at the most recent ${MAX_ISSUE_PAGES * ISSUE_PAGE}. Every user was still verified individually, but Jira cannot search comments by author, so someone whose only activity was a comment on an older issue may be listed.`;
+  `This site had more than ${MAX_ISSUE_PAGES * ISSUE_PAGE} issues updated in the window, so the activity sweep stopped at the most recent ${MAX_ISSUE_PAGES * ISSUE_PAGE}. Every remaining user was still checked individually against all issues the app can see, comments included, so the list is unaffected — the scan just took longer.`;
+
+export const uncheckedWarning = (n) =>
+  `${n} ${n === 1 ? 'user' : 'users'} could not be checked: Jira rejected the activity query for ${n === 1 ? 'that account' : 'those accounts'}. ${n === 1 ? 'That user is' : 'They are'} not on the list and cannot be reclaimed.`;
 
 const now = () => Date.now();
 const overBudget = (t0) => now() - t0 > SLICE.softBudgetMs;
@@ -89,7 +98,9 @@ export async function handler(event) {
         return await fail(state, `Unknown scan phase "${state.phase}"`);
     }
     // A cancel or a new scan landed while this slice ran: its scratch writes
-    // would otherwise sit in storage for ever.
+    // would otherwise sit in storage for ever. (`null` is different: another
+    // copy of this slice committed first and the run goes on, so nothing is
+    // deleted.)
     if (live === false) await clearRun(state.run);
     return undefined;
   } catch (err) {
@@ -117,6 +128,12 @@ export async function handler(event) {
  * Commit a patch only if this run is still the live one. A cancel that lands
  * mid-slice must win; without this check the slice would overwrite it with
  * its stale `status: 'running'` snapshot and carry on.
+ *
+ * Returns true when the patch was written, false when the run is over
+ * (cancelled or replaced), and null when another copy of this slice has
+ * already committed: queue events are delivered at least once, and two copies
+ * can start before either commits. The late copy writes nothing and pushes
+ * nothing.
  */
 async function commit(state, patch, { requeue = true } = {}) {
   const fresh = await getScanState();
@@ -125,12 +142,28 @@ async function commit(state, patch, { requeue = true } = {}) {
     await clearRun(state.run);
     return false;
   }
+  if ((fresh.seq ?? 0) !== (state.seq ?? 0)) return null;
   // The seq only moves when a new event is sent; a pause (rate limit) keeps
   // it, so the platform's retry of the same event is still accepted.
   const seq = requeue ? (fresh.seq ?? 0) + 1 : (fresh.seq ?? 0);
-  const next = { ...fresh, ...patch, seq };
+  const next = { ...fresh, ...patch, seq, paused: false };
   await setScanState(next);
-  if (requeue) await queue.push({ body: { run: state.run, seq } });
+  if (requeue) {
+    try {
+      await queue.push({ body: { run: state.run, seq } });
+    } catch (err) {
+      // The cursor is saved, so nothing is lost. Forge refuses the push after
+      // 1,000 in one chain; any other failure is treated the same. The run is
+      // marked paused, and the page's status poll (a fresh chain) sends the
+      // next event.
+      await setScanState({
+        ...next,
+        paused: true,
+        pauses: (next.pauses ?? 0) + 1,
+        pauseReason: String(err?.message ?? err).slice(0, 300),
+      });
+    }
+  }
   return true;
 }
 
@@ -146,7 +179,9 @@ async function pause(state, patch, err) {
 
 async function fail(state, error) {
   const fresh = await getScanState();
-  if (!fresh || fresh.run !== state.run) return;
+  if (!fresh || fresh.run !== state.run || fresh.status !== 'running') return;
+  // A late copy of a slice must not fail a run that has moved on without it.
+  if ((fresh.seq ?? 0) !== (state.seq ?? 0)) return;
   await setScanState({
     ...fresh,
     status: 'failed',
@@ -274,7 +309,7 @@ async function doDirectory(state) {
       throw err;
     }
     for (const u of page.users) collected.push({ ...u, products: ['Jira'] });
-    startAt += DIRECTORY_PAGE;
+    startAt = page.nextStartAt;
     if (page.isLast) {
       isLast = true;
       break;
@@ -340,13 +375,46 @@ async function doIssues(state) {
     issuesScanned: scanned,
     sweepTruncated: Boolean(state.sweepTruncated) || truncated,
     phase: done ? 'verify' : 'issues',
-    ...(done ? { verifyShard: 0, verifyIndex: 0, verified: 0, dormantFound: 0 } : {}),
+    ...(done ? { verifyShard: 0, verifyIndex: 0, verified: 0, dormantFound: 0, unchecked: 0 } : {}),
   };
   if (paused) return pause(state, patch, paused);
   return commit(state, patch);
 }
 
 // --- verify -----------------------------------------------------------------
+
+/**
+ * The admin-like names among ALL of a user's groups, read as the app (there
+ * is no signed-in user in a background slice). The page uses them to show
+ * "Can't reclaim" for anyone in an admin group, whatever that group grants.
+ * null when Jira would not say; the reclaim step reads the groups again, live
+ * and as the admin, and asks Jira whether the person is an administrator.
+ */
+async function readAdminGroups(accountId) {
+  let res;
+  try {
+    res = await api
+      .asApp()
+      .requestJira(route`/rest/api/3/user/groups?accountId=${accountId}`, { headers: { Accept: 'application/json' } });
+  } catch (err) {
+    err.retryable = true;
+    throw err;
+  }
+  if (res.status === 429) {
+    const err = new Error('Rate limited by Jira');
+    err.rateLimited = true;
+    err.retryAfter = Math.max(1, Number(res.headers.get('Retry-After')) || 5);
+    throw err;
+  }
+  if (res.status >= 500) {
+    const err = new Error(`Jira returned ${res.status}`);
+    err.retryable = true;
+    throw err;
+  }
+  if (!res.ok) return null;
+  const rows = (await res.json()) ?? [];
+  return adminGroupNames((Array.isArray(rows) ? rows : []).map((g) => g?.name));
+}
 
 /**
  * For every user the sweep could not vouch for, ask Jira directly. This is
@@ -359,8 +427,24 @@ async function doVerify(state) {
   let index = state.verifyIndex ?? 0;
   let verified = state.verified ?? 0;
   let dormantFound = state.dormantFound ?? 0;
+  let unchecked = state.unchecked ?? 0;
   let checked = 0;
   let paused = null;
+
+  // Before anyone is checked, run the query once for the person who started
+  // the scan. If Jira rejects it for them too (even without the work log
+  // clause), it would reject it for everyone: say so now, with Jira's
+  // message, rather than end with a list of people who were not checked.
+  if (!state.queryChecked && state.startedBy) {
+    try {
+      await wasActiveWithin(state.startedBy, state.days);
+    } catch (err) {
+      if (err.rateLimited) return pause(state, {}, err);
+      if (err.status !== 400) throw err;
+      await fail(state, err.message);
+      return true;
+    }
+  }
 
   while (shard < SHARDS && checked < SLICE.verifyUsers && !overBudget(t0) && !paused) {
     const users = await getShardUsers(state.run, shard);
@@ -376,17 +460,21 @@ async function doVerify(state) {
       }
 
       let result;
+      let adminGroups = null;
       try {
         result = await verifyCandidate(accountId, state.days);
+        if (!result.active) adminGroups = await readAdminGroups(accountId);
       } catch (err) {
         if (err.rateLimited) {
           paused = err; // this user is re-verified when the slice resumes
           break;
         }
         if (err.status === 400) {
-          // Jira rejects the account (removed since the listing, or an unusual
-          // id). Treated as active: never listed as inactive on a guess.
-          result = { active: true };
+          // Jira rejected the query for this account, even without the work
+          // log clause (removed since the listing, or an unusual id). Not
+          // checked: counted and reported, never listed as inactive on a
+          // guess, and so never offered for reclaim.
+          result = { active: true, unchecked: true };
         } else {
           throw err;
         }
@@ -394,12 +482,14 @@ async function doVerify(state) {
       index += 1;
       checked += 1;
       verified += 1;
+      if (result.unchecked) unchecked += 1;
       if (!result.active) {
         dormantFound += 1;
         dormantRows.push({
           accountId,
           products: users[accountId].products,
           groups: users[accountId].groups ?? [],
+          ...(adminGroups?.length ? { adminGroups } : {}),
           bucket: result.bucket,
           label: result.label,
           severity: result.severity,
@@ -421,6 +511,8 @@ async function doVerify(state) {
     verifyIndex: index,
     verified,
     dormantFound,
+    unchecked,
+    queryChecked: true,
     phase: done ? 'finalize' : 'verify',
   };
   if (paused) return pause(state, patch, paused);
@@ -441,27 +533,48 @@ async function doFinalize(state) {
     }
   }
 
-  const report = await buildReport(state.run, {
-    days: state.days,
-    userSource: state.userSource ?? 'roles',
-    products: state.products ?? [],
-    groupsMeta: state.groupsMeta ?? {},
-    licensedByProduct,
-    totalUsers,
-    activeUsers: totalUsers - (state.dormantFound ?? 0),
-    verified: state.verified ?? 0,
-    issuesScanned: state.issuesScanned ?? 0,
-    sweepTruncated: Boolean(state.sweepTruncated),
-    warnings: [
-      ...(state.warnings ?? []),
-      ...(state.sweepTruncated ? [SWEEP_TRUNCATED_WARNING] : []),
-    ],
-  });
+  const unchecked = state.unchecked ?? 0;
+  const report = await buildReport(
+    state.run,
+    {
+      days: state.days,
+      // When the scan started: an action on a user from before this moment
+      // says nothing about a row of this report.
+      startedAt: state.startedAt ?? null,
+      userSource: state.userSource ?? 'roles',
+      products: state.products ?? [],
+      groupsMeta: state.groupsMeta ?? {},
+      licensedByProduct,
+      totalUsers,
+      activeUsers: totalUsers - (state.dormantFound ?? 0) - unchecked,
+      unchecked,
+      verified: state.verified ?? 0,
+      issuesScanned: state.issuesScanned ?? 0,
+      sweepTruncated: Boolean(state.sweepTruncated),
+      warnings: [
+        ...(state.warnings ?? []),
+        ...(state.sweepTruncated ? [SWEEP_TRUNCATED_WARNING] : []),
+        ...(unchecked ? [uncheckedWarning(unchecked)] : []),
+      ],
+    },
+    {
+      // Asked after the scratch data was read and before the report is
+      // written: a late copy of this slice must not publish.
+      confirm: async () => {
+        const fresh = await getScanState();
+        return Boolean(fresh && fresh.run === state.run && fresh.status === 'running' && (fresh.seq ?? 0) === (state.seq ?? 0));
+      },
+    }
+  );
+  if (!report) return null;
 
-  return commit(
+  const closed = await commit(
     state,
     { status: 'complete', phase: 'done', finishedAt: report.generatedAt },
     { requeue: false }
   );
+  // The scratch data goes only once the report is out and the run is closed,
+  // so a second copy of this slice never reads half-deleted data.
+  if (closed === true) await clearRun(state.run);
+  return closed;
 }
-

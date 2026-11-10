@@ -52,11 +52,16 @@ export function matchProduct(query, name) {
 /** Pure: the same three groups the page's status filter uses. */
 export function statusOf(u) {
   if (u?.lastAction?.status === 'reclaimed') return 'reclaimed';
-  return u?.reclaimable && !u?.isProtected ? 'ready' : 'blocked';
+  // "blocked" as a last action: a try found the app cannot reclaim this
+  // person (a Jira administrator, or a group managed by an identity provider).
+  return u?.reclaimable && !u?.isProtected && u?.lastAction?.status !== 'blocked' ? 'ready' : 'blocked';
 }
 
 /** Pure: why a blocked user is blocked, with the protected list applied. */
-export const blockReason = (u) => (u?.isProtected ? 'On your protected list.' : (u?.reason ?? 'Cannot be reclaimed.'));
+export const blockReason = (u) =>
+  u?.isProtected
+    ? 'On your protected list.'
+    : ((u?.lastAction?.status === 'blocked' ? u.lastAction.reason : u?.reason) ?? 'Cannot be reclaimed.');
 
 const STATUS_WORDS = { ready: 'Ready to reclaim', blocked: "Can't reclaim", reclaimed: 'Already reclaimed' };
 

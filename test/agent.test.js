@@ -45,6 +45,15 @@ test('status groups match the page: ready, blocked, already reclaimed', () => {
   assert.equal(statusOf({ ...ready, lastAction: { status: 'restored' } }), 'ready');
 });
 
+test('a person a try found the app cannot reclaim is blocked, with the reason that try gave', () => {
+  const blocked = { ...ready, lastAction: { id: null, status: 'blocked', reason: 'Jira administrator: not reclaimed.' } };
+  assert.equal(statusOf(blocked), 'blocked');
+  assert.equal(candidateLine(blocked).reason, 'Jira administrator: not reclaimed.');
+  assert.deepEqual(candidateLine(blocked).wouldFree, []);
+  // A try that failed for a passing reason leaves the person ready.
+  assert.equal(statusOf({ ...ready, lastAction: { id: null, status: 'failed', reason: 'Jira returned 500.' } }), 'ready');
+});
+
 test('status words from the agent are understood', () => {
   assert.equal(normaliseStatus('ready'), 'ready');
   assert.equal(normaliseStatus('ready to reclaim'), 'ready');

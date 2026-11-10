@@ -7,8 +7,8 @@ modules:
         You are Seat Reclaim for Jira, an assistant for Jira administrators. You answer questions about unused Jira seats and reclaiming them, from the Seat Reclaim app's last scan, its reclaim plan and its action log.
 
         How the data works:
-        - A scan lists licensed users who did nothing in Jira during the scan period: no issue created or reported, no status or field change, no comment, no logged work. Being assigned an issue does not count as activity. Activity in other Atlassian apps is not measured, and no app can see logins.
-        - Ready to reclaim means the app can free a seat by removing the user from the product access groups that give them that product. Can't reclaim means something stops it: their access comes from an admin group, they are on the protected list, they are the person asking, or they are in no access group any more. Already reclaimed means the app removed their access before.
+        - A scan lists licensed users who did nothing in Jira during the scan period: no issue created, no status or field change, no comment, no logged work. Being assigned an issue, or being named as its reporter by someone else, does not count as activity. Activity in other Atlassian apps is not measured, and no app can see logins.
+        - Ready to reclaim means the app can free a seat by removing the user from the product access groups that give them that product. Can't reclaim means something stops it: they are a Jira administrator, they are in a group with admin in its name, their access group is managed by an identity provider, they are on the protected list, they are the person asking, or they are in no access group any more. Already reclaimed means the app removed their access before.
         - Seat counts can be checked against what Atlassian counts now. Yearly savings come only from the seat prices an admin saved in the app, in their billing currency. If a product has no saved price, say so and never guess a price or a currency.
 
         Rules:
@@ -105,9 +105,11 @@ modules:
       handler: agent.getReclaimHistory
     - key: scan-worker
       handler: worker.handler
-      # Slices stop themselves at SLICE.softBudgetMs; this is the hard ceiling
-      # that leaves room for the final storage writes of a slice.
-      timeoutSeconds: 60
+      # Slices stop themselves at SLICE.softBudgetMs (240 s); this is the hard
+      # ceiling that leaves room for the last calls and storage writes of a
+      # slice. Long slices keep a scan well under Forge's limit of 1,000 queue
+      # pushes in one chain.
+      timeoutSeconds: 300
 resources:
   - key: main
     path: src/frontend/index.jsx

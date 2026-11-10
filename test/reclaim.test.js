@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isAdminGroup,
+  adminGroupNames,
   buildGroupsMeta,
   planReclaim,
   reasonText,
@@ -25,13 +26,19 @@ test('admin groups are recognised however they are named', () => {
   for (const n of ['site-admins', 'org-admins', 'administrators', 'jira-admins-acme', 'Jira-Administrators', 'sysadmins', 'admin']) {
     assert.equal(isAdminGroup(n), true, n);
   }
+  // Names the whole-word rule missed: no separator, or another language.
+  for (const n of ['JiraAdmins', 'ITAdmins', 'siteadmins', 'superadmins', 'Administratoren', 'Administrateurs', 'jira-administration']) {
+    assert.equal(isAdminGroup(n), true, n);
+  }
   for (const n of ['jira-users-acme', 'jira-servicemanagement-users-acme', 'confluence-users', '']) {
     assert.equal(isAdminGroup(n), false, n);
   }
-  // "admin" inside another word is not an admin group.
-  for (const n of ['badminton-club', 'administrative-assistants', 'padmin']) {
-    assert.equal(isAdminGroup(n), false, n);
+  // The rule is wide on purpose: for an app that removes access, a wrong
+  // "can't reclaim" is the safe mistake.
+  for (const n of ['badminton-club', 'administrative-assistants']) {
+    assert.equal(isAdminGroup(n), true, n);
   }
+  assert.deepEqual(adminGroupNames(['team-blue', 'JiraAdmins', undefined, 'JiraAdmins', 'site-admins']), ['JiraAdmins', 'site-admins']);
 });
 
 test('a group that grants several products lists all of them', () => {
@@ -52,14 +59,26 @@ test('groups that grant no product are never touched', () => {
   assert.ok(!plan.remove.some((g) => g.groupId === 'some-team-group'));
 });
 
-test('an admin is never removed from an admin group, and keeps those products', () => {
+test('an administrator is not reclaimed at all, not even for a product the admin group does not grant', () => {
+  // org-admins grants Jira Software and JSM; the person also holds Product
+  // Discovery through its own group. Nothing is planned: no group is left.
   const plan = planReclaim({ userGroupIds: ['g-org', 'g-jsw', 'g-jpd'], groupsMeta: META });
-  assert.equal(plan.reclaimable, true); // Product Discovery can still be freed
-  assert.deepEqual(plan.remove.map((g) => g.groupId), ['g-jpd']);
-  assert.deepEqual(plan.freedProducts, ['Jira Product Discovery']);
-  assert.deepEqual(plan.keptProducts.map((k) => k.product), ['Jira Service Management', 'Jira Software']);
-  // jira-users-site is NOT removed: leaving it frees nothing while org-admins grants Jira Software.
-  assert.ok(!plan.remove.some((g) => g.groupId === 'g-jsw'));
+  assert.equal(plan.reclaimable, false);
+  assert.equal(plan.reason, 'admin');
+  assert.deepEqual(plan.remove, []);
+  assert.deepEqual(plan.freedProducts, []);
+  assert.deepEqual(plan.adminGroups, ['org-admins']);
+});
+
+test('an admin group that grants no product still stops a reclaim', () => {
+  // The caller passes the admin-like names among ALL the person's groups.
+  const plan = planReclaim({ userGroupIds: ['g-jsw', 'g-jpd'], groupsMeta: META, adminGroups: ['jira-admins-site'] });
+  assert.equal(plan.reclaimable, false);
+  assert.equal(plan.reason, 'admin');
+  assert.deepEqual(plan.remove, []);
+  assert.match(reasonText(plan), /jira-admins-site/);
+  // Without such a group the same person is an ordinary user.
+  assert.equal(planReclaim({ userGroupIds: ['g-jsw', 'g-jpd'], groupsMeta: META, adminGroups: [] }).reclaimable, true);
 });
 
 test('someone whose only access is an admin group cannot be reclaimed, and the reason says why', () => {
@@ -67,7 +86,16 @@ test('someone whose only access is an admin group cannot be reclaimed, and the r
   assert.equal(plan.reclaimable, false);
   assert.equal(plan.reason, 'admin');
   assert.match(reasonText(plan), /org-admins/);
-  assert.match(reasonText(plan), /admin role/);
+  assert.match(reasonText(plan), /never reclaims anyone in a group with "admin" in its name/);
+  // A row planned by the earlier version named the group under keptProducts.
+  assert.match(reasonText({ reclaimable: false, reason: 'admin', keptProducts: [{ product: 'Jira Software', via: 'site-admins' }] }), /site-admins/);
+});
+
+test('the reasons a reclaim is skipped are plain', () => {
+  assert.equal(reasonText({ reclaimable: false, reason: 'jira-admin' }), 'Jira administrator: not reclaimed.');
+  assert.match(reasonText({ reclaimable: false, reason: 'admin-unconfirmed' }), /Could not confirm/);
+  assert.equal(reasonText({ reclaimable: false, reason: 'not-on-list' }), 'Not on the current list. Run a new scan.');
+  assert.match(reasonText({ reclaimable: false, reason: 'in-flight' }), /less than a minute ago/);
 });
 
 test('the person running the app and protected accounts are never reclaimable', () => {
@@ -121,8 +149,19 @@ test('a group synced from an identity provider gets a plain explanation', () => 
   assert.match(explainChange(400, scim), /identity provider/);
   assert.equal(isIdpManaged(400, { message: 'Group not modifiable' }), true);
   assert.equal(isIdpManaged(400, { errorMessages: ['User is already a member of the group'] }), false);
-  assert.equal(isIdpManaged(403, scim), false);
+  // The same refusal as a 403 is read the same way, as in the Confluence app.
+  assert.equal(isIdpManaged(403, scim), true);
+  assert.equal(isIdpManaged(403, { message: 'This group is managed by an external identity provider' }), true);
+  assert.equal(isIdpManaged(403, { errorMessages: ['You are not a site admin'] }), false);
+  assert.equal(isIdpManaged(500, scim), false);
   assert.match(explainChange(400, { errorMessages: ['Something else'] }), /Jira returned 400/);
+});
+
+test('a refusal shows whatever reason Jira gave, wherever it put it', () => {
+  assert.match(explainChange(400, { message: 'Group is archived' }), /Jira returned 400\. \(Group is archived\)/);
+  assert.match(explainChange(400, { errors: { groupId: 'No such group' } }), /No such group/);
+  assert.match(explainChange(403, { message: 'Site admin only' }), /Only site admins.*Site admin only/);
+  assert.match(explainChange(429, null), /slow down/);
 });
 
 test('undo treats "already a member" as restored', () => {
@@ -139,4 +178,13 @@ test('only groups that were actually left count as freed products', () => {
   assert.deepEqual(freedProductsFrom(changes), ['Jira Software']);
   assert.deepEqual(freedProductsFrom(changes, [{ product: 'Jira Software', via: 'site-admins' }]), []);
   assert.deepEqual(freedProductsFrom(undefined), []);
+});
+
+test('a product still held through a group that was not left is not counted as freed', () => {
+  const changes = [
+    { groupId: 'g1', name: 'jira-software-users', products: ['Jira Software', 'Jira Product Discovery'], ok: true },
+    { groupId: 'g2', name: 'okta-jira', products: ['Jira Software'], ok: false, error: 'refused' },
+    { groupId: 'g3', name: 'jsm-agents', products: ['Jira Service Management'], ok: false, unknown: true },
+  ];
+  assert.deepEqual(freedProductsFrom(changes), ['Jira Product Discovery']);
 });

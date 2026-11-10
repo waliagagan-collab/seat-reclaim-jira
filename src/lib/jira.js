@@ -9,6 +9,8 @@ import api, { route } from '@forge/api';
  *   1. A cheap SWEEP over recently-updated issues proves most users active.
  *   2. An exhaustive per-user VERIFY query runs only for the remaining
  *      candidates, so a wrong answer can't come from the sweep being partial.
+ *      The sweep IS partial: Jira's search returns only the newest part of an
+ *      issue's comments and history. Nobody is listed on the sweep's word.
  */
 
 // ---------------------------------------------------------------------------
@@ -156,8 +158,11 @@ export async function fetchGroupMemberPage(groupId, startAt) {
   const values = body?.values ?? [];
   return {
     users: filterLicensedUsers(values),
-    isLast: Boolean(body?.isLast) || values.length < GROUP_PAGE,
-    nextStartAt: startAt + GROUP_PAGE,
+    // Jira says when a page is the last one. A short page is not proof of it,
+    // so only an empty page ends the listing on its own, and the next page
+    // starts where this one ended.
+    isLast: Boolean(body?.isLast) || values.length === 0,
+    nextStartAt: startAt + values.length,
   };
 }
 
@@ -169,11 +174,15 @@ export async function fetchGroupMemberPage(groupId, startAt) {
 export async function fetchDirectoryPage(startAt, pageSize) {
   const params = searchParams({ startAt, maxResults: pageSize });
   const batch = await getJson(route`/rest/api/3/users/search?${params}`);
+  const count = Array.isArray(batch) ? batch.length : 0;
   return {
     users: filterLicensedUsers(batch),
     // Pagination follows the RAW page length, not the filtered length, or a
-    // page of bots would end the sweep early.
-    isLast: !Array.isArray(batch) || batch.length < pageSize,
+    // page of bots would end the sweep early. This endpoint has no "last
+    // page" flag, so only an empty page ends the listing, and the next page
+    // starts where this one ended.
+    isLast: count === 0,
+    nextStartAt: startAt + count,
   };
 }
 
@@ -191,15 +200,21 @@ const epoch = (iso) => {
  *
  * Only things a person DID count, and only inside the window (`since`).
  * Being assigned is done TO you — the changelog records who did the
- * assigning — so the assignee field alone is not a signal. Creator and
- * reporter are stamped at `created`, which is when that person acted, never
- * at `updated`, which may be someone else's edit.
+ * assigning — so the assignee field alone is not a signal. The creator is
+ * stamped at `created`, which is when that person acted, never at `updated`,
+ * which may be someone else's edit. The reporter is whoever the issue was
+ * raised FOR (an agent or a rule can raise it), so the reporter counts only
+ * when the same account also created the issue.
  *
- * The window matters: `expand=changelog` returns an issue's WHOLE history and
- * `comment` its whole comment list, so a recently updated issue carries the
- * names of everyone who ever touched it. Without the cut-off, a colleague who
- * left two years ago would look active every time someone edits an old
- * ticket they once commented on — the exact person this report exists to find.
+ * The window matters: a recently updated issue carries the names of people
+ * who touched it long ago. Without the cut-off, a colleague who left two
+ * years ago would look active every time someone edits an old ticket they
+ * once commented on — the exact person this report exists to find.
+ *
+ * The search returns only the newest part of each issue's comments and
+ * history (about 20 comments and 40 history entries), so this reducer can
+ * miss activity on a busy issue. That is safe: it only ever proves someone
+ * active, and everyone it does not prove active gets the per-user check.
  */
 export function reduceIssues(issues, since) {
   const activity = {};
@@ -228,7 +243,9 @@ export function reduceIssues(issues, since) {
       mark(c?.updateAuthor, c?.updated, 'commented');
     }
     mark(f.creator, f.created, 'created an issue');
-    mark(f.reporter, f.created, 'reported an issue');
+    if (f.reporter?.accountId && f.reporter.accountId === f.creator?.accountId) {
+      mark(f.reporter, f.created, 'reported an issue');
+    }
   }
 
   for (const entry of Object.values(activity)) delete entry.ts;
@@ -250,6 +267,8 @@ export async function fetchActivityPage(days, nextPageToken, pageSize) {
     maxResults: pageSize,
     fields: 'creator,reporter,created,comment,worklog',
     expand: 'changelog',
+    // Work in a project that was archived later still counts.
+    includeArchivedProjects: true,
     nextPageToken,
   });
   const body = await getJson(route`/rest/api/3/search/jql?${params}`);
@@ -268,38 +287,55 @@ export async function fetchActivityPage(days, nextPageToken, pageSize) {
 
 /**
  * Pure. Every clause is something the user DID, scoped to the window.
- * `startOfDay(-Nd)` rather than a bare `-Nd` because the CHANGED predicate
- * is documented against date functions.
  *
- * JQL's CHANGED BY works on exactly six fields — status, assignee, priority,
- * resolution, fix version and reporter — and all six are used, so the only
- * actions this query cannot see are comments and edits to other fields.
- * Those are covered by the sweep; see reduceIssues.
+ * `updatedBy()` is the wide one: Jira documents it as matching issues the
+ * user created, any field they changed, and comments they added, deleted or
+ * edited. It is what lets this query stand on its own, because the sweep sees
+ * only part of a busy issue's comments and history.
+ *
+ * The other clauses stay as a second net. `startOfDay(-Nd)` rather than a
+ * bare `-Nd` because the CHANGED predicate is documented against date
+ * functions. JQL's CHANGED BY works on exactly six fields — status, assignee,
+ * priority, resolution, fix version and reporter — and all six are used.
+ *
+ * There is no `reporter = user` clause: being named as reporter is not
+ * something the user did (see reduceIssues). `worklogs: false` leaves out the
+ * work log clause, for the one retry when Jira rejects the query.
  */
 export const CHANGED_FIELDS = ['status', 'assignee', 'priority', 'resolution', 'fixVersion', 'reporter'];
 
-export function buildUserActivityJql(accountId, days) {
+export function buildUserActivityJql(accountId, days, { worklogs = true } = {}) {
   const id = JSON.stringify(String(accountId));
   const n = Number(days);
   return [
+    `issue in updatedBy(${id}, "-${n}d")`,
     ...CHANGED_FIELDS.map((f) => `${f} CHANGED BY ${id} AFTER startOfDay(-${n}d)`),
-    `worklogAuthor = ${id} AND worklogDate >= -${n}d`,
+    ...(worklogs ? [`worklogAuthor = ${id} AND worklogDate >= -${n}d`] : []),
     `creator = ${id} AND created >= -${n}d`,
-    `reporter = ${id} AND created >= -${n}d`,
   ]
     .map((c) => `(${c})`)
     .join(' OR ');
 }
 
-/** true if the user did anything in Jira within `days`, across ALL issues. */
-export async function wasActiveWithin(accountId, days) {
-  const params = searchParams({
-    jql: buildUserActivityJql(accountId, days),
-    maxResults: 1,
-    fields: 'id',
-  });
+async function anyIssue(jql) {
+  const params = searchParams({ jql, maxResults: 1, fields: 'id', includeArchivedProjects: true });
   const body = await getJson(route`/rest/api/3/search/jql?${params}`);
   return (body?.issues ?? []).length > 0;
+}
+
+/**
+ * true if the user did anything in Jira within `days`, across ALL issues the
+ * app can see. When Jira rejects the query (400) it is asked once more
+ * without the work log clause; a second 400 is thrown to the caller, who must
+ * treat the user as not checked, never as inactive.
+ */
+export async function wasActiveWithin(accountId, days) {
+  try {
+    return await anyIssue(buildUserActivityJql(accountId, days));
+  } catch (err) {
+    if (err.status !== 400) throw err;
+  }
+  return anyIssue(buildUserActivityJql(accountId, days, { worklogs: false }));
 }
 
 /**

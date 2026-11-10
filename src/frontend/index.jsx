@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ForgeReconciler, {
   Box,
   Button,
@@ -31,7 +31,18 @@ import ForgeReconciler, {
 } from '@forge/react';
 import { invoke, view } from '@forge/bridge';
 import { licenseGate, licenseMessage } from '../lib/scan.js';
-import { bandOptions, filterRows, fmtMoney, normaliseSeatCosts, scanProgress, showReviewPrompt, yearlySaving } from '../lib/ui.js';
+import {
+  bandOptions,
+  canSelect,
+  filterRows,
+  fmtMoney,
+  normaliseSeatCosts,
+  rowNote,
+  rowStatus,
+  scanProgress,
+  showReviewPrompt,
+  yearlySaving,
+} from '../lib/ui.js';
 
 const REVIEW_URL = 'https://marketplace.atlassian.com/apps/1825851557?tab=reviews';
 
@@ -87,25 +98,10 @@ const phaseText = (s) => {
   }
 };
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const fmtDate = (iso) => (iso ? new Date(iso).toISOString().slice(0, 10) : '—');
 const fmtTime = (iso) => (iso ? new Date(iso).toISOString().slice(0, 16).replace('T', ' ') : '—');
 const join = (xs) => (xs ?? []).join(', ') || '—';
-
-/** Status shown for a row: what happened last, or whether it can be reclaimed. */
-function rowStatus(u) {
-  const last = u.lastAction?.status;
-  if (last === 'reclaimed') return { text: 'Reclaimed', appearance: 'success' };
-  if (last === 'pending') return { text: 'Interrupted', appearance: 'moved' };
-  if (last === 'partial') return { text: 'Partly reclaimed', appearance: 'moved' };
-  if (u.isProtected) return { text: 'Protected', appearance: 'default' };
-  if (!u.reclaimable) return { text: 'Can’t reclaim', appearance: 'default' };
-  return { text: 'Ready', appearance: 'inprogress' };
-}
-
-// A partly reclaimed user still has groups to leave, so they stay selectable.
-// An interrupted reclaim (no answer from Jira) is sorted out from History first.
-const canSelect = (u) =>
-  u.reclaimable && !u.isProtected && u.lastAction?.status !== 'reclaimed' && u.lastAction?.status !== 'pending';
 
 // ---------------------------------------------------------------------------
 // Inactive users tab
@@ -140,11 +136,13 @@ const HowItWorks = ({ compact, onToggle }) =>
       <Stack space="space.100">
         <Text>
           Run a scan to find licensed users who did <Strong>nothing in Jira</Strong> in the period: no status change,
-          field edit, comment, logged work, or issue created or reported. Every candidate is checked against all issues
+          field edit, comment, logged work, or issue created. Every candidate is checked against all issues
           the app can see (projects it cannot browse are invisible to it). Then pick who to reclaim. The app takes them out of the groups that give them that product,
-          which frees the seat. Admins, app accounts and you are never touched, and you can <Strong>Protect</Strong>{' '}
-          anyone else you want left alone. Nothing changes until you confirm; each person's activity and groups are
-          re-checked live first, and every change can be undone from the History tab.
+          which frees the seat. Three kinds of people are never reclaimed: Jira administrators (Jira is asked about
+          each person just before the change), anyone in a group with "admin" in its name, and you. App accounts are
+          not listed. You can <Strong>Protect</Strong> anyone else you want left alone. Nothing changes until you
+          confirm; each person's activity and groups are re-checked live first, and every change can be undone from the
+          History tab.
         </Text>
         {onToggle && (
           <Box>
@@ -326,52 +324,76 @@ function AuditPanel({ gate, onChanged, version }) {
   const scanAgeDays = report?.generatedAt ? Math.floor((Date.now() - Date.parse(report.generatedAt)) / 86_400_000) : 0;
   const totalSeats = Object.values(report?.dormantByProduct ?? {}).reduce((a, b) => a + b, 0);
 
+  // One run at a time. The confirm button can be clicked twice before the
+  // dialog closes; a ref says so at once, where state would say so too late.
+  const reclaiming = useRef(false);
+
   /** Reclaim in small batches; read Atlassian's seat counts before and after. */
   const runReclaim = async () => {
+    if (reclaiming.current) return;
+    reclaiming.current = true;
     setConfirmOpen(false);
     setOutcome(null);
     setMessage(null);
-    const ids = chosen.map((u) => u.accountId);
+    const names = Object.fromEntries(chosen.map((u) => [u.accountId, u.displayName]));
+    const queue = chosen.map((u) => u.accountId);
+    const total = queue.length;
+    const tries = {};
     const results = [];
     let before = null;
     let after = null;
     try {
-      before = await invoke('getSeatCounts');
-    } catch {
-      /* the counts are a bonus; the reclaim does not depend on them */
-    }
-    for (let i = 0; i < ids.length; i += BATCH) {
-      setProgress({ done: i, total: ids.length });
       try {
-        const res = await invoke('reclaim', { accountIds: ids.slice(i, i + BATCH) });
-        if (!res?.ok) {
-          results.push(...ids.slice(i, i + BATCH).map((accountId) => ({ accountId, ok: false, error: res?.error })));
-          if (res?.unlicensed || res?.forbidden) break;
-        } else {
-          results.push(...(res.results ?? []));
-        }
+        before = await invoke('getSeatCounts');
       } catch {
-        // No answer: the groups may well have been left. History is the truth.
-        results.push(
-          ...ids.slice(i, i + BATCH).map((accountId) => ({
-            accountId,
-            ok: false,
-            unknown: true,
-            error: 'No reply from Jira. The change may have gone through; check the History tab before trying again.',
-          }))
-        );
+        /* the counts are a bonus; the reclaim does not depend on them */
       }
+      while (queue.length) {
+        const batch = queue.splice(0, BATCH);
+        setProgress({ done: total - queue.length - batch.length, total });
+        try {
+          const res = await invoke('reclaim', { accountIds: batch });
+          if (!res?.ok) {
+            results.push(...batch.map((accountId) => ({ accountId, ok: false, error: res?.error })));
+            if (res?.unlicensed || res?.forbidden) break;
+            continue;
+          }
+          for (const r of res.results ?? []) {
+            // Jira asked for a pause before anything changed for this person:
+            // they go back in the queue, at most twice.
+            if (r.retry && (tries[r.accountId] = (tries[r.accountId] ?? 0) + 1) <= 2) queue.push(r.accountId);
+            else results.push(r);
+          }
+          if (res.retryAfter) {
+            setProgress({ done: total - queue.length, total, waiting: true });
+            await sleep(Math.min(60, Number(res.retryAfter) || 5) * 1000);
+          }
+        } catch {
+          // No answer: the groups may well have been left. History is the truth.
+          results.push(
+            ...batch.map((accountId) => ({
+              accountId,
+              ok: false,
+              unknown: true,
+              error: 'No reply from Jira. The change may have gone through; check the History tab before trying again.',
+            }))
+          );
+        }
+      }
+      try {
+        after = await invoke('getSeatCounts');
+      } catch {
+        /* see above */
+      }
+      setProgress(null);
+      setSelected(new Set());
+      setOutcome({ results: results.map((r) => ({ ...r, displayName: r.displayName ?? names[r.accountId] ?? r.accountId })), before, after });
+      await loadAll();
+      onChanged?.();
+    } finally {
+      setProgress(null);
+      reclaiming.current = false;
     }
-    try {
-      after = await invoke('getSeatCounts');
-    } catch {
-      /* see above */
-    }
-    setProgress(null);
-    setSelected(new Set());
-    setOutcome({ results, before, after });
-    await loadAll();
-    onChanged?.();
   };
 
   return (
@@ -415,7 +437,14 @@ function AuditPanel({ gate, onChanged, version }) {
       {running && !stale && (
         <Stack space="space.075">
           <ProgressBar ariaLabel="Scan progress" value={scan.value} isIndeterminate={scan.indeterminate} />
-          <Text>{phaseText(state)}. You can leave this page — the scan continues.</Text>
+          <Text>
+            {phaseText(state)}.{' '}
+            {state?.paused
+              ? 'The scan is paused. It continues while this page is open.'
+              : state?.pauses
+                ? 'This is a long scan. It pauses now and then and continues while this page is open, so keep the page open.'
+                : 'You can leave this page — the scan continues.'}
+          </Text>
         </Stack>
       )}
 
@@ -435,8 +464,9 @@ function AuditPanel({ gate, onChanged, version }) {
         <Stack space="space.075">
           <ProgressBar ariaLabel="Reclaim progress" value={progress.total ? progress.done / progress.total : 0} />
           <Text>
-            Reclaiming seats — {Math.min(progress.done + BATCH, progress.total)} of {progress.total} users. Keep this
-            page open.
+            {progress.waiting
+              ? 'Jira asked the app to slow down. Waiting a moment before the next users. Keep this page open.'
+              : `Reclaiming seats — ${Math.min(progress.done + BATCH, progress.total)} of ${progress.total} users. Keep this page open.`}
           </Text>
         </Stack>
       )}
@@ -455,7 +485,8 @@ function AuditPanel({ gate, onChanged, version }) {
               {saving !== null ? ` · about ${fmtMoney(saving)} a year` : ''}
             </Heading>
             <Text>
-              {report.totalUsers} licensed · {report.activeUsers} active · {report.days}-day window · scanned{' '}
+              {report.totalUsers} licensed · {report.activeUsers} active
+              {report.unchecked ? ` · ${report.unchecked} not checked` : ''} · {report.days}-day window · scanned{' '}
               {fmtDate(report.generatedAt)}
             </Text>
             {report.dormantCount > 0 && saving === null && (
@@ -682,7 +713,7 @@ function AuditPanel({ gate, onChanged, version }) {
                         content: (
                           <Stack space="space.050">
                             <Lozenge appearance={st.appearance}>{st.text}</Lozenge>
-                            {!u.reclaimable && u.reason && <Text size="small">{u.reason}</Text>}
+                            {rowNote(u) && <Text size="small">{rowNote(u)}</Text>}
                             {canSelect(u) && <Text size="small">Frees: {join(u.freedProducts)}</Text>}
                           </Stack>
                         ),
@@ -731,10 +762,11 @@ function AuditPanel({ gate, onChanged, version }) {
               <Stack space="space.150">
                 <Text>
                   Each person below is taken out of the listed groups, which removes their access to the listed
-                  products and frees those seats. Their Atlassian account stays active. Before each change the app
-                  reads their groups again and checks live that they are still inactive: anyone who created, changed,
-                  transitioned, reassigned or logged work on an issue since the scan is skipped (a comment alone is only
-                  seen by a new scan). You can undo any of it from the History tab.
+                  products and frees those seats. Leaving a group also removes anything else that group grants. Their
+                  Atlassian account stays active. Before each change the app reads their groups again, asks Jira
+                  whether they are a Jira administrator, and checks live that they are still inactive: anyone who
+                  created, changed or commented on an issue, or logged work, since the scan is skipped, and so is any
+                  administrator. You can undo any of it from the History tab.
                 </Text>
                 <DynamicTable
                   head={{
@@ -933,13 +965,19 @@ function HistoryPanel({ version, onChanged }) {
                           {fmtTime(e.restoredAt)} by {e.restoredByName ?? '—'}
                         </Text>
                       )}
+                      {e.status === 'pending' && (
+                        <Text size="small">
+                          Jira did not answer before this stopped. Check the person's groups; Undo puts back every group that was planned.
+                        </Text>
+                      )}
                     </Stack>
                   ),
                 },
                 {
                   key: 'act',
                   content:
-                    e.status === 'restored' ? null : (
+                    // "Not done" changed nothing, so there is nothing to undo.
+                    e.status === 'restored' || e.status === 'failed' ? null : (
                       <Button spacing="compact" onClick={() => undo(e)} isDisabled={Boolean(working)}>
                         {working === e.id ? 'Undoing…' : 'Undo'}
                       </Button>

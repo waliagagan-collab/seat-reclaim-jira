@@ -13,23 +13,23 @@ Seat Reclaim: Remove Inactive Users & Free Licenses for Jira
 
 Find inactive Jira users and free their seats after you confirm. Every change is logged and can be undone
 
-## Summary (234 / 250)
+## Summary (249 / 250)
 
-Finds licensed Jira users who did nothing for 30 to 365 days, verified against every issue, and frees their seats after you confirm by taking them out of product access groups. Admins are never touched, and every change can be undone.
+Finds licensed Jira users who did nothing for 30 to 365 days, checked against all issues the app can see, and frees their seats after you confirm by taking them out of product access groups. Jira admins are never reclaimed. Any change can be undone.
 
 ## Categories and keywords
 
 - Categories: Administrative tools; Data and analytics (match License Audit)
 - Keywords (4): Audit, User permissions, Compliance, Reporting
 
-## More details (785 / 250–1000)
+## More details (947 / 250–1000)
 
 **Every Jira seat you pay for should belong to someone who uses Jira.**
 
 Seat Reclaim lists the licensed users who have done **nothing in Jira** in a period you choose (no status change, field edit, comment, logged work, or issue created) and frees their seats after you confirm.
 
-- Each user shows what reclaiming would free, or why it can't: admin groups, you, and your protected list are never touched.
-- Select users, check the summary of groups and products, confirm. Activity and groups are re-checked live first.
+- Each user shows what reclaiming would free, or why it can't. Jira admins, anyone in a group with "admin" in its name, you, and your protected list are never reclaimed.
+- Select users, check the summary of groups and products, confirm. Activity, groups and admin rights are re-checked live first. Leaving a group also removes anything else that group grants.
 - See Atlassian's seat count before and after, and what inactive seats cost a year.
 - History logs every change; Undo restores exactly the groups removed.
 
@@ -39,7 +39,7 @@ Seat Reclaim lists the licensed users who have done **nothing in Jira** in a per
 
 1. **Free seats and see the count drop** — Select inactive users, confirm, and their seats are free. The page shows Atlassian's own seat count before and after, and what the inactive seats cost a year.
    Image: `assets/2026-10-12/highlight-1-result.png`
-2. **Check every change before it happens** — A summary lists the groups each person leaves and the products they lose. Activity and groups are re-checked live before each change. Admins, you and anyone you protect are never touched.
+2. **Check every change before it happens** — A summary lists the groups each person leaves and the products they lose. Activity, groups and admin rights are re-checked live before each change. Jira admins, you and anyone you protect are never reclaimed.
    Image: `assets/2026-10-12/highlight-2-confirm.png`
 3. **Undo any reclaim** — History records whose seat was reclaimed, who approved it, when, and which groups they left. Undo puts the person back in exactly those groups.
    Image: `assets/2026-10-12/highlight-3-history.png`
@@ -49,7 +49,7 @@ Hero: banner image `assets/banner-1920x1200.png` (or 1120×548 where asked).
 ## Version step
 
 - Release summary (66 / 80): First release: find inactive users and free their seats, with undo
-- Release notes: Finds licensed Jira users with no activity in a period you choose, verified against every issue, and frees their seats after you confirm by taking them out of product access groups. Admin groups, the person running it and protected users are never reclaimed. History logs every change and Undo restores exactly the groups removed. Includes a read-only Rovo agent.
+- Release notes: Finds licensed Jira users with no activity in a period you choose, checked against all issues the app can see, and frees their seats after you confirm by taking them out of product access groups. Jira administrators, anyone in a group with "admin" in its name, the person running it and protected users are never reclaimed. History logs every change and Undo restores exactly the groups removed. Includes a read-only Rovo agent.
 - License: Commercial. Supported: Yes. EULA: Atlassian's standard EULA.
 
 ## Links
@@ -88,8 +88,8 @@ Totals: $90 at 100 users, $165 at 250, $240 at 500, $390 at 1,000. Multi-instanc
 | `read:group:jira` | List the members of the product access groups. |
 | `read:user:jira` | Read active flag and account type to leave out bots and customers; display name and email at display time. |
 | `read:avatar:jira` | Required alongside `read:user:jira` by the group-member endpoint; avatars are not shown. |
-| `read:jira-user` | Read a user's current groups just before a reclaim, and fall back to the site directory if roles are unreadable. |
-| `read:jira-work` | Search recently updated issues and read changelog, comment and worklog authors to decide who was active. Issue content is never stored. |
+| `read:jira-user` | Read a user's groups during a scan (to see whether they are in an admin group) and again just before a reclaim, and fall back to the site directory if roles are unreadable. |
+| `read:jira-work` | Search recently updated issues and read changelog, comment and worklog authors to decide who was active, and ask Jira per user which issues they updated. Issue content is never stored. |
 | `write:group:jira` | The one write scope: remove a user from a product access group (reclaim) and add them back (undo), both as the signed-in site admin after they confirm. Jira requires a site admin for both. |
 | `storage:app` | Keep scan progress, the report, the protected list, the reclaim history and seat prices in Forge hosted storage. |
 

@@ -47,7 +47,7 @@ export function licenseGate(license, environmentType) {
 export function licenseMessage(gate, license) {
   if (gate.allowed) return null;
   if (gate.reason === 'simulated-inactive') {
-    return 'This test install is simulating an inactive licence.';
+    return 'This test install is simulating an inactive license.';
   }
   if (license?.trialEndDate && Date.parse(license.trialEndDate) < Date.now()) {
     return 'Your free trial of Seat Reclaim has ended. Subscribe in Jira → Apps → Manage apps to keep reclaiming seats.';

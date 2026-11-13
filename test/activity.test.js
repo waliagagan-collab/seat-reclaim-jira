@@ -361,3 +361,16 @@ test('a replayed verify slice does not duplicate users in the dormant list', () 
   assert.deepEqual(merged.map((r) => r.accountId), ['a', 'b']);
   assert.deepEqual(mergeDormant(undefined, []), []);
 });
+
+// --- words for a refused read ---------------------------------------------------
+
+test('a refused read tells the admin to update the app, never to reinstall it', async () => {
+  const { explain } = await import('../src/lib/jira.js');
+  const text = explain(403, { errorMessages: ['No permission'] });
+  assert.match(text, /Jira refused the request \(403\)/);
+  assert.match(text, /update Seat Reclaim/);
+  assert.match(text, /Jira said: No permission/);
+  assert.doesNotMatch(text, /reinstall/i);
+  assert.equal(explain(400, { errorMessages: ['Bad JQL'] }), 'Jira rejected the query (400). Jira said: Bad JQL');
+  assert.equal(explain(500, null), 'Jira returned 500.');
+});

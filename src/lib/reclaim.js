@@ -113,7 +113,7 @@ export function reasonText(plan) {
     case 'no-access-groups':
       return 'Not in any product access group any more. Their seat may already be free.';
     case 'no-role-data':
-      return "The app couldn't read Jira's licence groups during the scan, so it can't plan a reclaim. Reinstalling the app usually restores that permission; then run a new scan.";
+      return "The app could not read which groups give each Jira product during the scan, so it cannot plan a reclaim. Open Jira settings → Apps → Manage apps and update Seat Reclaim if an update is offered, then run a new scan. Do not uninstall the app: a new install starts with an empty History.";
     case 'active-since-scan':
       return 'Has been active in Jira since the scan, so their seat was left alone. Run a new scan for a current list.';
     default:

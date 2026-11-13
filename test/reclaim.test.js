@@ -129,7 +129,10 @@ test('with no group map at all (directory fallback) the reason is missing data, 
   const plan = planReclaim({ userGroupIds: ['g-jsw'], groupsMeta: {} });
   assert.equal(plan.reclaimable, false);
   assert.equal(plan.reason, 'no-role-data');
-  assert.match(reasonText(plan), /licence groups/);
+  assert.match(reasonText(plan), /could not read which groups give each Jira product/);
+  // A reinstall starts with an empty History (no Undo), so the advice is to update.
+  assert.match(reasonText(plan), /update Seat Reclaim/);
+  assert.doesNotMatch(reasonText(plan), /reinstall/i);
   assert.ok(!/already be free/.test(reasonText(plan)));
   assert.match(reasonText({ reclaimable: false, reason: 'active-since-scan' }), /active in Jira since the scan/);
 });

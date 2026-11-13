@@ -32,15 +32,21 @@ export function searchParams(obj) {
   return p;
 }
 
-function explain(status, body) {
-  const detail = body?.errorMessages?.length
-    ? ` — ${body.errorMessages.join('; ')}`
-    : '';
+// What to do when Jira will not let the app read something. Updating the app
+// approves the permissions of its current version. Never suggest a reinstall:
+// Forge treats it as a new installation with empty storage, so History and
+// every Undo would be gone.
+export const UPDATE_ADVICE =
+  'Open Jira settings → Apps → Manage apps and update Seat Reclaim if an update is offered, then run a new scan. Do not uninstall the app: a new install starts with an empty History.';
+
+/** Pure: words for a Jira read the app could not make. */
+export function explain(status, body) {
+  const detail = body?.errorMessages?.length ? ` Jira said: ${body.errorMessages.join('; ')}` : '';
   if (status === 401 || status === 403) {
-    return `Jira refused the request (${status}). The app is probably missing a permission it was granted after install — reinstalling it re-grants the current scopes.${detail}`;
+    return `Jira refused the request (${status}). The app may be waiting for a permission to be approved. ${UPDATE_ADVICE}${detail}`;
   }
-  if (status === 400) return `Jira rejected the query (400)${detail}`;
-  return `Jira returned ${status}${detail}`;
+  if (status === 400) return `Jira rejected the query (400).${detail}`;
+  return `Jira returned ${status}.${detail}`;
 }
 
 async function getJson(path) {

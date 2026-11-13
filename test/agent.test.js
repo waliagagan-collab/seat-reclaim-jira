@@ -112,6 +112,9 @@ test('history lines name people and say whether a reclaim was undone', () => {
   const name = (id) => ({ u1: 'Ria Ready', me: 'Gagan' })[id] ?? null;
   const h = historyLine({ accountId: 'u1', by: 'me', status: 'restored', at: 't1', restoredAt: 't2', restoredBy: 'me', freedProducts: ['Jira Product Discovery'], groups: [{ name: 'jpd-users', ok: true }, { name: 'x', ok: false }] }, name);
   assert.equal(h.outcome, 'Undone');
+  // The agent uses the History tab's words, never a raw status.
+  assert.equal(historyLine({ accountId: 'u1', status: 'pending' }, () => 'x').outcome, 'Interrupted');
+  assert.equal(historyLine({ accountId: 'u1', status: 'failed' }, () => 'x').outcome, 'Not done');
   assert.equal(h.user, 'Ria Ready');
   assert.deepEqual(h.groupsLeft, ['jpd-users']);
   assert.equal(h.undoneBy, 'Gagan');

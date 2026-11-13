@@ -174,7 +174,14 @@ export function listAnswer(meta, opts, matching) {
   };
 }
 
-const ACTION_WORDS = { reclaimed: 'Reclaimed', partial: 'Partly reclaimed', failed: 'Failed', restored: 'Undone' };
+// The same words the History tab shows for each status.
+const ACTION_WORDS = {
+  reclaimed: 'Reclaimed',
+  partial: 'Partly reclaimed',
+  pending: 'Interrupted',
+  failed: 'Not done',
+  restored: 'Undone',
+};
 
 /** Pure: one log entry as the agent shows it; `name` maps account IDs to display names. */
 export const historyLine = (e, name) => ({

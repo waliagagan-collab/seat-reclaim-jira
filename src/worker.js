@@ -206,7 +206,7 @@ async function doRoles(state) {
         userSource: 'directory',
         warnings: [
           ...(state.warnings ?? []),
-          'Application roles were not readable, so the user list is the whole site directory. It may include Confluence-only accounts that hold no Jira seat.',
+          'The app could not read which groups give each Jira product, so this list covers everyone in the site directory. It may include people who hold no Jira seat, and nobody on it can be reclaimed.',
         ],
         directoryCursor: 0,
       });
@@ -220,7 +220,7 @@ async function doRoles(state) {
       userSource: 'directory',
       warnings: [
         ...(state.warnings ?? []),
-        'No application roles with licensing groups were found, so the user list is the whole site directory.',
+        'Jira reported no product access groups, so this list covers everyone in the site directory. Nobody on it can be reclaimed.',
       ],
       directoryCursor: 0,
     });

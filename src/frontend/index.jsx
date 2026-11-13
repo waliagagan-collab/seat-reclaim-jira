@@ -86,11 +86,11 @@ const phaseText = (s) => {
       return 'Reading license groups';
     case 'members':
     case 'directory':
-      return `Listing licensed users — ${s.usersFound ?? 0} found`;
+      return `Listing licensed users: ${s.usersFound ?? 0} found`;
     case 'issues':
-      return `Scanning recent activity — ${s.issuesScanned ?? 0} issues`;
+      return `Reading recent activity: ${s.issuesScanned ?? 0} issues`;
     case 'verify':
-      return `Checking candidates — ${s.verified ?? 0} checked, ${s.dormantFound ?? 0} inactive so far`;
+      return `Checking users one by one: ${s.verified ?? 0} checked, ${s.dormantFound ?? 0} inactive so far`;
     case 'finalize':
       return 'Building the list';
     default:
@@ -443,14 +443,14 @@ function AuditPanel({ gate, onChanged, version }) {
               ? 'The scan is paused. It continues while this page is open.'
               : state?.pauses
                 ? 'This is a long scan. It pauses now and then and continues while this page is open, so keep the page open.'
-                : 'You can leave this page — the scan continues.'}
+                : 'You can leave this page. The scan continues.'}
           </Text>
         </Stack>
       )}
 
       {stale && (
         <SectionMessage appearance="warning" title="This scan appears to be stuck">
-          <Text>It has not made progress for over 20 minutes. Restarting is safe — a scan changes nothing.</Text>
+          <Text>It has not made progress for over 20 minutes. Restarting is safe: a scan changes nothing.</Text>
         </SectionMessage>
       )}
 
@@ -466,7 +466,7 @@ function AuditPanel({ gate, onChanged, version }) {
           <Text>
             {progress.waiting
               ? 'Jira asked the app to slow down. Waiting a moment before the next users. Keep this page open.'
-              : `Reclaiming seats — ${Math.min(progress.done + BATCH, progress.total)} of ${progress.total} users. Keep this page open.`}
+              : `Reclaiming seats: ${Math.min(progress.done + BATCH, progress.total)} of ${progress.total} users. Keep this page open.`}
           </Text>
         </Stack>
       )}

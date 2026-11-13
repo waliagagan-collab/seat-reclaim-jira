@@ -52,7 +52,7 @@ const MAX_ISSUE_PAGES = 400; // sweep ceiling; verify makes a partial sweep harm
 const MAX_TRANSIENT_RETRIES = 6;
 
 export const SWEEP_TRUNCATED_WARNING =
-  `This site had more than ${MAX_ISSUE_PAGES * ISSUE_PAGE} issues updated in the window, so the activity sweep stopped at the most recent ${MAX_ISSUE_PAGES * ISSUE_PAGE}. Every remaining user was still checked individually against all issues the app can see, comments included, so the list is unaffected — the scan just took longer.`;
+  `This site had more than ${MAX_ISSUE_PAGES * ISSUE_PAGE} issues updated in the window, so the activity sweep stopped at the most recent ${MAX_ISSUE_PAGES * ISSUE_PAGE}. Every remaining user was still checked individually against all issues the app can see, comments included, so the list is not affected. The scan just took longer.`;
 
 export const uncheckedWarning = (n) =>
   `${n} ${n === 1 ? 'user' : 'users'} could not be checked: Jira rejected the activity query for ${n === 1 ? 'that account' : 'those accounts'}. ${n === 1 ? 'That user is' : 'They are'} not on the list and cannot be reclaimed.`;

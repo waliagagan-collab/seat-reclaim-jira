@@ -240,7 +240,7 @@ export async function clearRun(run) {
 // Protected list: accounts the app must never reclaim
 // ---------------------------------------------------------------------------
 
-const PROTECTED_KEY = 'protected';
+export const PROTECTED_KEY = 'protected';
 
 export const getProtected = async () => (await kvs.get(PROTECTED_KEY)) ?? {};
 
@@ -433,6 +433,17 @@ export async function getLatestFor(accountIds) {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// When a reclaim or an undo last started. Only the time, no account: the
+// weekly personal data report does not erase while one may still be running
+// (busy in personal-data.js), since each writes History from what it read.
+// ---------------------------------------------------------------------------
+
+export const ACTION_KEY = 'action:started';
+
+export const markActionStarted = () => kvs.set(ACTION_KEY, { at: new Date().toISOString() });
+export const getActionStarted = () => kvs.get(ACTION_KEY);
 
 // ---------------------------------------------------------------------------
 // Settings: the yearly price of one seat, per product. Numbers only.

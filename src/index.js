@@ -19,6 +19,7 @@ import {
   getLatestFor,
   getSettings,
   saveSettings,
+  markActionStarted,
 } from './lib/store.js';
 import { fetchUsersBulk, fetchApplicationRoles, wasActiveWithin } from './lib/jira.js';
 import { adminOnly } from './lib/admin.js';
@@ -207,6 +208,10 @@ define('reclaim', async ({ payload, context }) => {
   const asked = Array.isArray(payload?.accountIds) ? payload.accountIds : [];
   const ids = [...new Set(asked.map(String))].slice(0, RECLAIM_BATCH);
   if (!ids.length) return { ok: false, error: 'No users selected.' };
+  // The weekly personal data report does not erase while this may still be
+  // running (busy in lib/personal-data.js). A note that cannot be written
+  // only means the report does not wait.
+  await markActionStarted().catch(() => {});
 
   const meta = await getReportMeta();
   // A reclaim works from the list a scan produced, never from an account ID
@@ -375,6 +380,8 @@ define('reclaim', async ({ payload, context }) => {
  * to give people their access back.
  */
 define('undo', async ({ payload, context }) => {
+  // As for reclaim: the personal data report waits while this may be running.
+  await markActionStarted().catch(() => {});
   const entry = await getEntry(String(payload?.entryId ?? ''));
   if (!entry || entry.type !== 'reclaim') return { ok: false, error: 'That action was not found.' };
   if (entry.status === 'restored') return { ok: true, already: true };

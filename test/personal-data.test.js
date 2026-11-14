@@ -340,6 +340,34 @@ test('an error text that quotes a closed account says "(closed account)" instead
   assert.match(status.state.error, /\(closed account\)/);
 });
 
+test('the hourly trigger runs the report and logs one line per run, with the totals at the end and never an account', async () => {
+  await scan();
+  await reclaim(ALICE, ADMIN);
+  actionsOver();
+  globalThis.__closed = [ALICE];
+  const lines = [];
+  const log = console.log;
+  console.log = (...args) => lines.push(args.join(' '));
+  try {
+    for (let i = 0; i < 10 && stored('pdr:state')?.phase !== 'idle'; i++) assert.deepEqual(await server.privacy.scheduled(), { statusCode: 200 });
+    assert.equal(stored('pdr:state').phase, 'idle');
+    await server.privacy.scheduled();
+    // Storage failing for a whole run is logged and the trigger still answers.
+    globalThis.__kvsFail = 100;
+    assert.deepEqual(await server.privacy.scheduled(), { statusCode: 200 });
+    globalThis.__kvsFail = 0;
+  } finally {
+    console.log = log;
+  }
+  assert.ok(!storedText().includes(ALICE));
+  assert.ok(lines.length >= 3);
+  assert.ok(lines.every((l) => l.startsWith('Personal data report: ')));
+  // Alice's row, who is on the list, her History entry and the note on her row.
+  assert.ok(lines.some((l) => /step idle, accounts 4, closed 1, values changed 4, skipped 0$/.test(l)), lines.join('\n'));
+  assert.ok(lines.some((l) => l === 'Personal data report: did not run, step idle'), 'a week not over yet: nothing to do');
+  for (const id of PEOPLE) assert.ok(!lines.join('\n').includes(id));
+});
+
 // --- busy ---------------------------------------------------------------------------
 
 test('busy: a running scan holds erasing back until it stops moving, and so does a reclaim or an undo for a minute', async () => {

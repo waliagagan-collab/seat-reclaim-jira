@@ -88,6 +88,12 @@ modules:
       resolver:
         function: resolver
       title: Seat Reclaim
+  scheduledTrigger:
+    # The weekly personal data report: each run does a slice of it, or
+    # nothing when this week's report is done.
+    - key: personal-data-report
+      function: personal-data
+      interval: hour
   consumer:
     - key: scan-consumer
       queue: scan-queue
@@ -110,6 +116,10 @@ modules:
       # slice. Long slices keep a scan well under Forge's limit of 1,000 queue
       # pushes in one chain.
       timeoutSeconds: 300
+    - key: personal-data
+      handler: privacy.scheduled
+      # Slices stop themselves at SOFT_BUDGET_MS (40 s); this is the hard ceiling.
+      timeoutSeconds: 60
 resources:
   - key: main
     path: src/frontend/index.jsx
@@ -137,3 +147,7 @@ permissions:
     # (reclaim) and rejoin it (undo). Jira itself requires a site admin for both.
     - write:group:jira
     - storage:app
+    # Sends Atlassian the account IDs the app keeps, once a week, so the data
+    # of accounts Atlassian reports closed is erased. It changes nothing on
+    # the site.
+    - report:personal-data

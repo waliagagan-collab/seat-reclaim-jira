@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { unzipSync, strFromU8 } from 'fflate';
-import { normaliseSeatCosts, yearlySaving, fmtMoney, filterRows, bandOptions, scanProgress, showReviewPrompt, rowStatus, canSelect, rowNote } from '../src/lib/ui.js';
+import { normaliseSeatCosts, yearlySaving, fmtMoney, filterRows, bandOptions, scanProgress, showReviewPrompt, rowStatus, canSelect, rowNote, notListed, notListedText } from '../src/lib/ui.js';
 import { buildXlsx, columnName, xmlText, csvCell, toCsv } from '../src/frame/xlsx.js';
 import { loadFrame } from './helpers.js';
 
@@ -149,4 +149,23 @@ test('the export says "No" for a row the app cannot reclaim, with the reason the
   assert.equal(ready[can], 'Yes');
   assert.equal(blocked[can], 'No');
   assert.equal(blocked[reason], 'Jira administrator: not reclaimed.');
+});
+
+test('users the scan counted whose accounts were closed since: counted on the page and in the download', async () => {
+  assert.equal(notListed(12, 11, 5000), 1);
+  assert.equal(notListed(12, 12, 5000), 0);
+  assert.equal(notListed(1, 0, 5000), 1, 'the only listed user is gone');
+  assert.equal(notListed(6200, 5000, 5000), 0, 'a list cut at the limit says nothing');
+  assert.equal(notListed(6200, 4999, 5000), 1201);
+  assert.equal(notListed(3, 1), 2, 'no limit');
+  assert.equal(notListed(undefined, 0), 0);
+  assert.equal(notListed(0, 2), 0);
+  assert.equal(notListedText(0), '');
+  assert.equal(notListedText(1), '1 user counted in this scan is no longer listed: their Atlassian account was closed. The totals are from the scan; the next scan counts again.');
+  assert.match(notListedText(3), /^3 users counted in this scan are no longer listed: their Atlassian accounts were closed\./);
+  const { notListedNote } = await loadFrame();
+  assert.equal(notListedNote(0), '');
+  assert.equal(notListedNote(undefined), '');
+  assert.equal(notListedNote(1), ' 1 user counted in the scan is not in the download: their Atlassian account was closed.');
+  assert.match(notListedNote(3), /^ 3 users counted in the scan are not in the download: their Atlassian accounts were closed\.$/);
 });
